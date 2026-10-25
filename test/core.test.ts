@@ -5,6 +5,7 @@ import { belongsTo, normalizePath } from '../src/worker/collect';
 import { verifyStandardWebhook } from '../src/worker/lib/crypto';
 import { bucketLabels, resolveRange, startOfDay, tzOffset } from '../src/worker/lib/time';
 import { isBot, parseUA } from '../src/worker/lib/ua';
+import { purgeOldData, retentionCutoff, retentionDays } from '../src/worker/retention';
 
 describe('classify', () => {
   it('maps t.co to X / social', () => {
@@ -98,5 +99,45 @@ describe('Standard Webhooks (Dodo)', () => {
   it('rejects tampering and stale timestamps', async () => {
     expect(await verifyStandardWebhook(secret, { id: 'msg_1', timestamp: ts, signature: `v1,${sig}` }, body + ' ')).toBe(false);
     expect(await verifyStandardWebhook(secret, { id: 'msg_1', timestamp: String(Number(ts) - 3600), signature: `v1,${sig}` }, body)).toBe(false);
+  });
+});
+
+describe('retention', () => {
+  it('only turns on for a positive whole number of days', () => {
+    expect(retentionDays(undefined)).toBeNull();
+    expect(retentionDays('')).toBeNull();
+    expect(retentionDays('0')).toBeNull();
+    expect(retentionDays('-5')).toBeNull();
+    expect(retentionDays('7.5')).toBeNull();
+    expect(retentionDays('761')).toBe(761);
+  });
+
+  it('computes the cutoff in days', () => {
+    expect(retentionCutoff(2, 5 * 86_400_000)).toBe(3 * 86_400_000);
+  });
+
+  it('runs every cleanup statement with the cutoff, and nothing when unset', async () => {
+    const calls: { sql: string; args: unknown[] }[] = [];
+    let batches = 0;
+    const db = {
+      prepare: (sql: string) => ({ bind: (...args: unknown[]) => (calls.push({ sql, args }), { sql, args }) }),
+      batch: async () => {
+        batches++;
+        return [];
+      },
+    } as unknown as D1Database;
+    expect(await purgeOldData(db, undefined, 10 * 86_400_000)).toBeNull();
+    expect(batches).toBe(0);
+    const cutoff = await purgeOldData(db, '761', 1000 * 86_400_000);
+    expect(cutoff).toBe(239 * 86_400_000);
+    expect(batches).toBe(1);
+    expect(calls.map((c) => c.sql.split(' ').slice(0, 3).join(' '))).toEqual([
+      'DELETE FROM events',
+      'DELETE FROM sessions',
+      'DELETE FROM visitors',
+      'UPDATE payments SET',
+      'DELETE FROM login_failures',
+    ]);
+    expect(calls.every((c) => c.args[0] === cutoff)).toBe(true);
   });
 });

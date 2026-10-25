@@ -4,6 +4,8 @@
   "main": "src/worker/index.ts",
   "compatibility_date": "2025-09-01",
   "observability": { "enabled": true },
+  // Daily data-retention cleanup. Only deletes anything when the RETENTION_DAYS secret is set.
+  "triggers": { "crons": ["17 3 * * *"] },
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",

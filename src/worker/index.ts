@@ -5,6 +5,7 @@ import { handleEvent } from './collect';
 import { forgetSite, type AppEnv, type Site } from './env';
 import { passwordsMatch, randomId, signToken, verifyToken } from './lib/crypto';
 import { handleDodoWebhook, handleGoalApi, handlePaymentApi } from './payments';
+import { purgeOldData } from './retention';
 import { breakdown, customers, funnel, makeCtx, overview, visitorProfile, visitors, type FunnelStep } from './stats';
 
 const app = new Hono<AppEnv>();
@@ -250,4 +251,10 @@ app.all('/api/*', (c) => c.json({ error: 'not found' }, 404));
 // Everything else is the dashboard (static files).
 app.all('*', (c) => c.env.ASSETS.fetch(c.req.raw));
 
-export default app;
+export default {
+  fetch: app.fetch,
+  // Daily cleanup (cron in wrangler.jsonc). Does nothing unless RETENTION_DAYS is set.
+  scheduled(_controller: ScheduledController, env: AppEnv['Bindings'], ctx: ExecutionContext) {
+    ctx.waitUntil(purgeOldData(env.DB, env.RETENTION_DAYS));
+  },
+} satisfies ExportedHandler<AppEnv['Bindings']>;

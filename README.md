@@ -154,6 +154,17 @@ No analytics tool is 100% accurate. These are the main gaps and how this project
 - **Bots** are filtered by user agent and the `navigator.webdriver` flag.
 - Revenue in a different currency than the site's is converted only when Dodo gives a settlement amount in the site's currency.
 
+## Data retention
+
+By default Minilytics keeps everything. To delete old data automatically, set how many days to keep:
+
+```bash
+npx wrangler secret put RETENTION_DAYS     # e.g. 760 for about 25 months
+```
+
+A daily job (the cron in `wrangler.jsonc`) then deletes events, sessions and visitors older than that. Old payments
+keep their amount and date, so revenue totals stay right, but lose the visitor, session, customer, email and name.
+
 ## Local development
 
 ```bash

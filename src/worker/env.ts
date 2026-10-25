@@ -5,6 +5,8 @@ export interface Env {
   ADMIN_PASSWORD: string;
   /** Random string used to sign the login cookie (`wrangler secret put SESSION_SECRET`). */
   SESSION_SECRET: string;
+  /** Optional: delete raw analytics older than this many days (`wrangler secret put RETENTION_DAYS`). */
+  RETENTION_DAYS?: string;
 }
 
 export interface Site {
