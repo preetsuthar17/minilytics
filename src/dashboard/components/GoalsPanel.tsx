@@ -253,15 +253,61 @@ function ShowAll({ total, shown, onClick }: { total: number; shown: number; onCl
   );
 }
 
+const MATCH_LABELS: Record<string, string> = {
+  return_page: 'return page',
+  customer: 'earlier payment',
+  email: 'email',
+  timing: 'checkout click timing',
+};
+
 function Journey({ search }: { search: string }) {
   const { site, q, reloadKey, money, openVisitor } = useDash();
   const [all, setAll] = useState(false);
-  const { data } = useApi<any[]>(`/api/sites/${site.id}/customers?${qs(q)}`, reloadKey);
+  const [version, setVersion] = useState(0);
+  const [rematch, setRematch] = useState<string | null>(null);
+  const [reasons, setReasons] = useState<{ id: string; name: string | null; matched: boolean; reason: string | null }[]>([]);
+  const { data } = useApi<any[]>(`/api/sites/${site.id}/customers?${qs(q)}`, reloadKey + version);
   if (!data) return <div className="h-40 animate-pulse" />;
   if (!data.length)
     return <div className="p-8 text-center text-sm text-stone-500">No payments in this period. Connect Dodo Payments in site settings to see who paid and where they came from.</div>;
+  const unmatched = data.filter((r) => !r.visitor_id).length;
   return (
     <div className="overflow-x-auto">
+      {unmatched > 0 && (
+        <div className="mx-3 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <span>
+            {unmatched} payment{unmatched > 1 ? 's' : ''} not linked to a visitor yet.{' '}
+            <a className="underline" href={`/site/${site.id}/settings`}>
+              Why?
+            </a>
+          </span>
+          <button
+            className="btn py-1.5"
+            disabled={rematch === 'working'}
+            onClick={async () => {
+              setRematch('working');
+              const r = await api<{ matched: number; checked: number; details: typeof reasons }>(`/api/sites/${site.id}/rematch`, {
+                method: 'POST',
+              });
+              setRematch(`Matched ${r.matched} of ${r.checked}`);
+              setReasons(r.details ?? []);
+              setVersion((v) => v + 1);
+            }}
+          >
+            {rematch === 'working' ? 'Matching…' : rematch ?? 'Try matching again'}
+          </button>
+          {reasons.length > 0 && (
+            <ul className="w-full space-y-1 border-t border-amber-200 pt-2 text-xs">
+              {reasons.map((r) => (
+                <li key={r.id}>
+                  <b>{r.name ?? r.id}</b>: {r.matched ? '✓ matched' : '✗ not matched'}
+                  {r.reason ? ` · ${r.reason}` : ''}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
       <table className="w-full min-w-[760px] text-[15px]">
         <thead>
           <tr className="text-left text-sm text-stone-500">
@@ -306,10 +352,15 @@ function Journey({ search }: { search: string }) {
                       <div>
                         <div>{r.source}</div>
                         {(r.utm_campaign || r.ref) && <div className="text-xs text-stone-500">{r.utm_campaign || r.ref}</div>}
+                        {r.matched_by && r.matched_by !== 'metadata' && (
+                          <div className="text-xs text-stone-400" title="How this payment was linked to the visitor">
+                            matched by {MATCH_LABELS[r.matched_by] ?? r.matched_by}
+                          </div>
+                        )}
                       </div>
                     </div>
                   ) : (
-                    <span className="text-stone-400" title="No visitor id in the payment metadata">
+                    <span className="text-stone-400" title="No visitor id in the payment metadata, and no return-page, email or timing match">
                       Not attributed
                     </span>
                   )}

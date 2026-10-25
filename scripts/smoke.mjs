@@ -30,6 +30,9 @@ assert((await call('/api/sites')).status === 401, 'dashboard API needs login');
 assert((await call('/api/auth/login', { method: 'POST', body: JSON.stringify({ password: 'nope' }) })).status === 401, 'wrong password rejected');
 assert((await call('/api/auth/login', { method: 'POST', body: JSON.stringify({ password: PASSWORD }) })).status === 200, 'login');
 
+// Remove leftovers from an interrupted earlier run (payment ids would collide).
+for (const old of (await call('/api/sites')).body) if (old.domain === 'smoke-test.com') await call(`/api/sites/${old.id}`, { method: 'DELETE' });
+
 const site = (await call('/api/sites', { method: 'POST', body: JSON.stringify({ domain: 'https://www.smoke-test.com/', name: 'Smoke', timezone: 'Asia/Kolkata' }) })).body;
 assert(site.domain === 'smoke-test.com', 'domain is normalised');
 
@@ -117,6 +120,59 @@ assert(fs.map((s) => s.visitors).join(',') === '1,1,1', `funnel 1,1,1 (got ${fs.
 
 const apiPay = await fetch(BASE + '/api/v1/payments', { method: 'POST', headers: { authorization: `Bearer ${site.api_key}`, 'content-type': 'application/json' }, body: JSON.stringify({ transaction_id: 't1', amount: 10.5, visitor_id: vid }) });
 assert((await apiPay.json()).attributed === true, 'generic payments API attributes');
+
+// --- Payments that arrive with EMPTY metadata (like Dodo payment links can) ---
+// 1. Return page: webhook first, then the buyer lands on /thanks?payment_id=...
+const vid2 = crypto.randomUUID(), sid2 = crypto.randomUUID();
+await event(site.id, { t: 'pageview', u: 'https://smoke-test.com/', r: 'https://chatgpt.com/', vid: vid2, sid: sid2 });
+await dodo({ ...pay, data: { ...pay.data, payment_id: 'pay_return_1', metadata: {}, customer: { customer_id: 'cus_2', email: 'k@example.com', name: 'K B' } } });
+let c1 = (await call(`/api/sites/${site.id}/customers?period=today`)).body.find((c) => c.id === 'pay_return_1');
+assert(c1 && !c1.visitor_id, 'payment without metadata starts unlinked');
+await event(site.id, { t: 'pageview', u: 'https://smoke-test.com/thanks?payment_id=pay_return_1&status=succeeded', r: 'https://checkout.dodopayments.com/', vid: vid2, sid: sid2 });
+c1 = (await call(`/api/sites/${site.id}/customers?period=today`)).body.find((c) => c.id === 'pay_return_1');
+assert(c1.visitor_id === vid2 && c1.source === 'ChatGPT' && c1.matched_by === 'return_page', 'return page links it and credits ChatGPT');
+
+// 2. Return page seen BEFORE the webhook arrives
+const vid3 = crypto.randomUUID(), sid3 = crypto.randomUUID();
+await event(site.id, { t: 'pageview', u: 'https://smoke-test.com/thanks?subscription_id=sub_abc123&status=active', r: 'https://www.reddit.com/', vid: vid3, sid: sid3 });
+await dodo({ ...pay, data: { ...pay.data, payment_id: 'pay_sub_1', subscription_id: 'sub_abc123', metadata: {}, customer: { customer_id: 'cus_3', email: 's@example.com', name: 'S' } } });
+const c2 = (await call(`/api/sites/${site.id}/customers?period=today`)).body.find((c) => c.id === 'pay_sub_1');
+assert(c2.visitor_id === vid3 && c2.source === 'Reddit', 'subscription return page seen before webhook still links');
+
+// 3. Timing: exactly one visitor clicked a Dodo checkout link shortly before the payment
+const vid4 = crypto.randomUUID(), sid4 = crypto.randomUUID();
+await event(site.id, { t: 'pageview', u: 'https://smoke-test.com/?ref=medium-article', r: '', vid: vid4, sid: sid4 });
+await event(site.id, { t: 'outbound', u: 'https://smoke-test.com/', n: 'https://checkout.dodopayments.com/buy/pdt_x', vid: vid4, sid: sid4 });
+await dodo({ ...pay, data: { ...pay.data, payment_id: 'pay_timing_1', metadata: {}, customer: { customer_id: 'cus_4', email: 't@example.com', name: 'T' } } });
+const c3 = (await call(`/api/sites/${site.id}/customers?period=today`)).body.find((c) => c.id === 'pay_timing_1');
+assert(c3.visitor_id === vid4 && c3.matched_by === 'timing' && c3.ref === 'medium-article', 'timing match credits the medium-article ref');
+
+// 3b. Several people clicked Buy; only the buyer came back right after paying (the real-world case)
+const clicker = async (id) => {
+  const v = crypto.randomUUID(), s = crypto.randomUUID();
+  await event(site.id, { t: 'pageview', u: 'https://smoke-test.com/', r: id === 'buyer' ? 'https://chatgpt.com/' : '', vid: v, sid: s });
+  await event(site.id, { t: 'goal', u: 'https://smoke-test.com/', n: 'checkout_click', vid: v, sid: s });
+  await event(site.id, { t: 'outbound', u: 'https://smoke-test.com/', n: 'https://checkout.dodopayments.com/buy/pdt_x', vid: v, sid: s });
+  return { v, s };
+};
+await clicker('a'); await clicker('b');
+const buyer = await clicker('buyer');
+await event(site.id, { t: 'pageview', u: 'https://smoke-test.com/thanks', r: 'https://checkout.dodopayments.com/', vid: buyer.v, sid: buyer.s });
+await dodo({ ...pay, data: { ...pay.data, payment_id: 'pay_timing_2', created_at: new Date().toISOString(), metadata: {}, customer: { customer_id: 'cus_5', email: 'kb@example.com', name: 'KB' } } });
+const c4 = (await call(`/api/sites/${site.id}/customers?period=today`)).body.find((c) => c.id === 'pay_timing_2');
+assert(c4.visitor_id === buyer.v && c4.source === 'ChatGPT', 'with 3 checkout clickers, the one who came back after paying gets it');
+
+// 3c. Two clickers who both came back: too close to call, stays unlinked with a reason
+const d1 = await clicker('d'), d2 = await clicker('e');
+await event(site.id, { t: 'pageview', u: 'https://smoke-test.com/thanks', r: '', vid: d1.v, sid: d1.s });
+await event(site.id, { t: 'pageview', u: 'https://smoke-test.com/thanks', r: '', vid: d2.v, sid: d2.s });
+await dodo({ ...pay, data: { ...pay.data, payment_id: 'pay_ambiguous', created_at: new Date().toISOString(), metadata: {}, customer: { customer_id: 'cus_6', email: 'amb@example.com', name: 'Amb' } } });
+const c5 = (await call(`/api/sites/${site.id}/customers?period=today`)).body.find((c) => c.id === 'pay_ambiguous');
+assert(!c5.visitor_id, 'ambiguous timing is not guessed');
+
+// 4. Rematch button works and reports why
+const rm = (await call(`/api/sites/${site.id}/rematch`, { method: 'POST' })).body;
+assert(rm.checked === 1 && rm.matched === 0 && /too close to call/.test(rm.details[0].reason), `rematch explains: "${rm.details?.[0]?.reason}"`);
 
 for (const p of ['today', 'yesterday', '24h', '48h', '7d', '30d', '90d', '12m', 'all']) {
   const res = await call(`/api/sites/${site.id}/overview?period=${p}`);

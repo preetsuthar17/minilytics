@@ -31,6 +31,7 @@ The script stores two first-party cookies: \`ml_vid\` (visitor id) and \`ml_sid\
   Next.js App Router example: const jar = await cookies(); jar.get('ml_vid')?.value
 - If the checkout request is made from the BROWSER to the server (fetch/axios), it normally already sends cookies on the same domain. If the API is on a different domain, read the ids in the browser with window.minilytics.attribution() (returns { ml_visitor_id, ml_session_id }) and send them in the request body, then put them in metadata on the server.
 - Static Dodo payment links (<a href="https://checkout.dodopayments.com/buy/...">) need no change — the script adds metadata to them automatically on click. But if code redirects to a payment link with JavaScript (window.location = ...), append the params yourself: ?metadata_ml_visitor_id=<id>&metadata_ml_session_id=<id> using window.minilytics.attribution().
+- Make sure every checkout has a return/redirect URL on this site (e.g. return_url: 'https://${site.domain}/thanks' for checkout sessions, or ?redirect_url=... on payment links), and that page loads the Minilytics script. Dodo appends ?payment_id=... (or ?subscription_id=...) to it, and Minilytics uses that to link the payment to the visitor even if metadata is lost. Keep those query params on the URL (don't strip them before the page loads).
 - Do NOT touch Dodo webhooks in this codebase for Minilytics. I connect Dodo → Minilytics myself in the Dodo dashboard (webhook URL: ${origin}/api/webhooks/dodo/${site.id}).
 
 ## Task 3 — Identify logged-in users

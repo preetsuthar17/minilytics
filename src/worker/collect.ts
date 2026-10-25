@@ -2,6 +2,7 @@ import type { Context } from 'hono';
 import { classify } from '../shared/sources';
 import { getSite, type AppEnv, type Site } from './env';
 import { isBot, parseUA } from './lib/ua';
+import { creditedSessionSql } from './payments';
 
 const TYPES = new Set(['pageview', 'goal', 'outbound', 'ping', 'identify']);
 const MAX_PING_MS = 10 * 60_000;
@@ -153,6 +154,7 @@ export async function ingest(
       );
     }
     stmts.push(insertEvent(db, site.id, sid, vid, now, 'pageview', null, path, null));
+    stmts.push(...claimPayment(db, site.id, vid, url, now));
   } else if (t === 'goal') {
     const name = clip(body.n, 64);
     if (!name) return;
@@ -170,6 +172,35 @@ export async function ingest(
     );
   }
   await db.batch(stmts);
+}
+
+/**
+ * Dodo sends buyers back to your return URL with ?payment_id=pay_... . Seeing that on a pageview tells us
+ * exactly which visitor made the payment, even when the checkout had no metadata.
+ */
+function claimPayment(db: D1Database, siteId: string, vid: string, url: URL, now: number): D1PreparedStatement[] {
+  const paymentId = url.searchParams.get('payment_id') ?? url.searchParams.get('subscription_id');
+  if (!paymentId || !/^(pay|sub)_[\w-]{4,64}$/.test(paymentId)) return [];
+  return [
+    db
+      .prepare('INSERT OR IGNORE INTO payment_claims (site_id, payment_id, visitor_id, ts) VALUES (?, ?, ?, ?)')
+      .bind(siteId, paymentId, vid, now),
+    // The webhook usually arrives first; link that payment now if nothing else already did.
+    db
+      .prepare(
+        `UPDATE payments SET visitor_id = ?, matched_by = 'return_page',
+           session_id = (${creditedSessionSql()})
+         WHERE site_id = ? AND (id = ? OR subscription_id = ?) AND visitor_id IS NULL`,
+      )
+      .bind(vid, siteId, vid, now + 60_000, siteId, paymentId, paymentId),
+    db
+      .prepare(
+        `UPDATE visitors SET email = COALESCE(email, (SELECT email FROM payments WHERE site_id = ? AND (id = ? OR subscription_id = ?) LIMIT 1)),
+           name = COALESCE(name, (SELECT name FROM payments WHERE site_id = ? AND (id = ? OR subscription_id = ?) LIMIT 1))
+         WHERE site_id = ? AND id = ?`,
+      )
+      .bind(siteId, paymentId, paymentId, siteId, paymentId, paymentId, siteId, vid),
+  ];
 }
 
 function insertEvent(

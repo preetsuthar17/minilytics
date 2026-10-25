@@ -4,7 +4,7 @@ import { cors } from 'hono/cors';
 import { handleEvent } from './collect';
 import { forgetSite, type AppEnv, type Site } from './env';
 import { passwordsMatch, randomId, signToken, verifyToken } from './lib/crypto';
-import { handleDodoWebhook, handleGoalApi, handlePaymentApi } from './payments';
+import { handleDodoWebhook, handleGoalApi, handlePaymentApi, rematchPayments } from './payments';
 import { purgeOldData } from './retention';
 import { breakdown, customers, funnel, makeCtx, overview, visitorProfile, visitors, type FunnelStep } from './stats';
 
@@ -208,6 +208,7 @@ app.get('/api/sites/:id/breakdown', async (c) => {
   }
 });
 
+app.post('/api/sites/:id/rematch', async (c) => c.json(await rematchPayments(c.env.DB, c.get('site'))));
 app.get('/api/sites/:id/customers', async (c) => c.json(await customers(makeCtx(c))));
 app.get('/api/sites/:id/visitors', async (c) => c.json(await visitors(makeCtx(c))));
 app.get('/api/sites/:id/visitors/:vid', async (c) =>

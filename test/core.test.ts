@@ -136,6 +136,7 @@ describe('retention', () => {
       'DELETE FROM sessions',
       'DELETE FROM visitors',
       'UPDATE payments SET',
+      'DELETE FROM payment_claims',
       'DELETE FROM login_failures',
     ]);
     expect(calls.every((c) => c.args[0] === cutoff)).toBe(true);

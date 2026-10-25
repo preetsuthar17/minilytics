@@ -176,13 +176,19 @@ const session = await dodo.checkoutSessions.create({
 });`}</Code>
             </div>
             <p className="mt-2 text-stone-500">
-              Using Dodo <b>payment links</b> (checkout.dodopayments.com/buy/…) instead? Nothing to do — the script adds the metadata to those links
-              automatically when clicked. In the browser you can also read the ids with <code>window.minilytics.attribution()</code>.
+              Using Dodo <b>payment links</b> (checkout.dodopayments.com/buy/…) instead? The script adds the metadata to those links
+              automatically when clicked, but it doesn't always reach the payment, so also set the return URL (step 4). In the browser you can also read the ids with <code>window.minilytics.attribution()</code>.
             </p>
             <p className="mt-2 text-stone-500">
-              Fallbacks if metadata is missing: the customer's email is matched to visitors you <code>identify()</code>, and renewals are matched to
-              the customer's first payment.
+              If metadata is missing, Minilytics still links the payment when the buyer lands back on your site, when their email matches a
+              visitor you <code>identify()</code>, when it's a renewal of an earlier payment, or when exactly one visitor clicked a checkout link
+              shortly before paying. The Journey tab shows how each payment was matched.
             </p>
+          </li>
+          <li>
+            <b>Recommended:</b> set your product's <b>return / redirect URL</b> in Dodo to a page on your site, e.g.{' '}
+            <code>https://{site.domain}/thanks</code>. Dodo adds <code>?payment_id=…</code> to it, which lets Minilytics link the payment to
+            the exact visitor even when metadata doesn't come through (for example with payment links).
           </li>
         </ol>
       </Section>

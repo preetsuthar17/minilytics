@@ -129,11 +129,18 @@ await dodo.checkoutSessions.create({
 ```
 
 Using Dodo **payment links**? The script adds `metadata_ml_visitor_id` / `metadata_ml_session_id` to any
-`checkout.dodopayments.com` link when it's clicked, so there's nothing to do.
+`checkout.dodopayments.com` link when it's clicked. That metadata doesn't always reach the payment, so also do step 3.
+
+3. Recommended: set the checkout's return / redirect URL to a page on your site (e.g. `/thanks`) that loads the
+   script. Dodo adds `?payment_id=…` to it, and Minilytics uses that to link the payment to the exact visitor even when
+   metadata doesn't come through.
 
 **How credit is given:** a payment goes to the paying visitor's last visit that came from a real source (last non-direct
 touch). So "clicked a tweet, came back directly 17 days later and paid" is credited to the tweet. If metadata is
-missing, the customer's email is matched to visitors you identified, and renewals are linked to the customer's first payment.
+missing, Minilytics tries, in order: the return page (`?payment_id=`), an earlier payment by the same customer
+(renewals), an email you `identify()`'d, and finally checkout timing (used only when exactly one visitor clicked a Dodo
+checkout link in the 3 hours before the payment). The Journey tab shows how each payment was matched, and **Try
+matching again** re-runs this for older payments.
 Refunds are subtracted from revenue.
 
 Other providers can use the generic API (the key is in site settings):
@@ -180,7 +187,7 @@ npm run smoke                         # end-to-end test against the running dev 
 
 ## How it's built
 
-- `public/js/script.js`: the tracker, 7 KB (about 3 KB gzipped). It handles cookies, pageviews, engaged time, goals, outbound links and Dodo link tagging
+- `public/js/script.js`: the tracker, 9 KB (about 3.5 KB gzipped). It handles cookies, pageviews, engaged time, goals, outbound links and Dodo link tagging
 - `src/worker`: a Hono app on Cloudflare Workers that handles event ingestion, the Dodo webhook, the payments and goals API, and stats queries on D1 (SQLite)
 - `src/dashboard`: the React dashboard (Vite, Tailwind, Recharts), served as static files by the same Worker
 - `migrations/`: the database schema

@@ -28,6 +28,7 @@ export function retentionStatements(db: D1Database, cutoff: number) {
         'UPDATE payments SET visitor_id = NULL, session_id = NULL, customer_id = NULL, email = NULL, name = NULL WHERE ts < ? AND (visitor_id IS NOT NULL OR session_id IS NOT NULL OR customer_id IS NOT NULL OR email IS NOT NULL OR name IS NOT NULL)',
       )
       .bind(cutoff),
+    db.prepare('DELETE FROM payment_claims WHERE ts < ?').bind(cutoff),
     db.prepare('DELETE FROM login_failures WHERE ts < ?').bind(cutoff),
   ];
 }

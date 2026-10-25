@@ -69,9 +69,20 @@
   }
 
   // ---- transport
+  // Personal data in URLs (e.g. ?email= on a payment return page) never leaves the browser.
+  var PRIVATE_PARAM = /^(e-?mail|name|phone|password|pass|token|access_token|id_token|auth|code|secret|key|api_key|license_key|license)$/i;
+  function cleanUrl(href) {
+    try {
+      var u = new URL(href);
+      var drop = [];
+      u.searchParams.forEach(function (_, k) { if (PRIVATE_PARAM.test(k)) drop.push(k); });
+      for (var i = 0; i < drop.length; i++) u.searchParams.delete(drop[i]);
+      return u.toString();
+    } catch (e) { return href; }
+  }
   function send(type, extra, beacon) {
     var id = ids();
-    var body = { w: siteId, t: type, u: loc.href, vid: id.vid, sid: id.sid, sw: w.screen ? screen.width : 0 };
+    var body = { w: siteId, t: type, u: cleanUrl(loc.href), vid: id.vid, sid: id.sid, sw: w.screen ? screen.width : 0 };
     for (var k in extra) if (extra[k] !== undefined) body[k] = extra[k];
     var json = JSON.stringify(body);
     // text/plain keeps this a "simple" request: no CORS preflight, works with sendBeacon.
@@ -128,6 +139,9 @@
     var id = ids();
     return { ml_visitor_id: id.vid, ml_session_id: id.sid };
   }
+  // Dodo checkout links carry the visitor as metadata. They're tagged as soon as they appear on the page,
+  // not just on click, because other scripts (e.g. Umami's click tracking) may copy the href and navigate
+  // before our click handler runs.
   function tagDodoLink(a) {
     try {
       var u = new URL(a.href);
@@ -135,9 +149,32 @@
       var att = attribution();
       u.searchParams.set('metadata_ml_visitor_id', att.ml_visitor_id);
       u.searchParams.set('metadata_ml_session_id', att.ml_session_id);
-      a.href = u.toString();
+      var next = u.toString();
+      if (a.href !== next) a.href = next;
     } catch (e) {}
   }
+  function tagDodoLinks() {
+    var links = d.querySelectorAll('a[href*="dodopayments.com"]');
+    for (var i = 0; i < links.length; i++) tagDodoLink(links[i]);
+  }
+  var tagQueued = false;
+  function queueTag() {
+    if (tagQueued) return;
+    tagQueued = true;
+    setTimeout(function () { tagQueued = false; tagDodoLinks(); }, 50);
+  }
+  if (w.MutationObserver) {
+    new MutationObserver(queueTag).observe(d.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['href'] });
+  }
+  if (d.readyState === 'loading') d.addEventListener('DOMContentLoaded', tagDodoLinks);
+  else tagDodoLinks();
+  // Refresh right before a click starts, in case the session id rotated while the page sat idle.
+  function onPress(e) {
+    var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    if (a) tagDodoLink(a);
+  }
+  d.addEventListener('pointerdown', onPress, true);
+  d.addEventListener('keydown', function (e) { if (e.key === 'Enter') onPress(e); }, true);
   function onClick(e) {
     var el = e.target && e.target.closest ? e.target : null;
     if (!el) return;
