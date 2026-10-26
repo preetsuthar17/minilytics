@@ -5,8 +5,9 @@
   "main": "src/worker/index.ts",
   "compatibility_date": "2025-09-01",
   "observability": { "enabled": true },
-  // Daily data-retention cleanup. Only deletes anything when the RETENTION_DAYS secret is set.
-  "triggers": { "crons": ["17 3 * * *"] },
+  // Daily: data-retention cleanup (raw analytics only when RETENTION_DAYS is set) and AI crawler IP ranges.
+  // Hourly: AI prompt monitoring (does nothing until an assistant API key is set).
+  "triggers": { "crons": ["17 3 * * *", "41 * * * *"] },
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",

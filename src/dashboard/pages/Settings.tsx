@@ -1,12 +1,13 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { navigate } from '../App';
 import { Favicon } from '../components/Icons';
+import { nextMiddleware, trackAgentFile, workerWrapper } from '../lib/agentSnippets';
 import { buildAiPrompt } from '../lib/aiPrompt';
 import { api, type Site } from '../lib/api';
 
-function Section({ title, desc, children }: { title: string; desc?: ReactNode; children: ReactNode }) {
+function Section({ title, desc, children, id }: { title: string; desc?: ReactNode; children: ReactNode; id?: string }) {
   return (
-    <section className="card p-6">
+    <section className="card scroll-mt-6 p-6" id={id}>
       <h2 className="text-lg font-semibold">{title}</h2>
       {desc && <p className="mt-1 text-sm text-stone-500">{desc}</p>}
       <div className="mt-4">{children}</div>
@@ -257,6 +258,8 @@ curl -X POST ${origin}/api/v1/goals \\
   -d '{"visitor_id":"<ml_vid cookie>","name":"signup"}'`}</Code>
       </Section>
 
+      <AiTrackingSection site={site} origin={origin} />
+
       <LinkBuilder domain={site.domain} />
 
       <Section title="General">
@@ -395,6 +398,65 @@ function LinkBuilder({ domain }: { domain: string }) {
       )}
       <p className="mt-2 text-xs text-stone-500">
         Shorter alternative: <code>?ref=launch-tweet</code> also works and shows up as the referrer.
+      </p>
+    </Section>
+  );
+}
+
+/** Server-side hook for AI crawlers, assistants and agents (they never run the script). */
+function AiTrackingSection({ site, origin }: { site: Site; origin: string }) {
+  const [tab, setTab] = useState<'next' | 'worker'>('next');
+  // Opened from the AI page's "Set up AI tracking" link.
+  useEffect(() => {
+    if (window.location.hash === '#ai-tracking') setTimeout(() => document.getElementById('ai-tracking')?.scrollIntoView({ behavior: 'smooth' }), 50);
+  }, []);
+  return (
+    <Section
+      id="ai-tracking"
+      title="AI crawlers, assistants & agents"
+      desc={
+        <>
+          ChatGPT, Claude, Perplexity, AI crawlers and coding agents read your pages without running JavaScript. Add this small server-side hook
+          and they show up in the <b>✨ AI</b> tab: which assistants read which pages (a sign they're citing you), who crawls you, and which
+          coding agents install your components. It never blocks or slows a response.
+        </>
+      }
+    >
+      <ol className="list-decimal space-y-4 pl-5 text-sm">
+        <li>
+          Set this site's API key as a secret on your app (it's the key from “Server-side API” above):
+          <div className="mt-2">
+            <Code>{`npx wrangler secret put MINILYTICS_API_KEY   # Cloudflare (paste ${site.api_key.slice(0, 6)}…)
+# or MINILYTICS_API_KEY=${site.api_key.slice(0, 6)}… in your host's environment variables`}</Code>
+          </div>
+        </li>
+        <li>
+          Add this file:
+          <div className="mt-2">
+            <Code>{trackAgentFile(origin)}</Code>
+          </div>
+        </li>
+        <li>
+          Call it on every request:
+          <div className="tabs mb-2 mt-2">
+            <button className={`tab ${tab === 'next' ? 'tab-active' : ''}`} onClick={() => setTab('next')}>
+              Next.js
+            </button>
+            <button className={`tab ${tab === 'worker' ? 'tab-active' : ''}`} onClick={() => setTab('worker')}>
+              Cloudflare Worker (TanStack Start, others)
+            </button>
+          </div>
+          <Code>{tab === 'next' ? nextMiddleware() : workerWrapper()}</Code>
+        </li>
+        <li>
+          Deploy, then check: <code>curl -A "GPTBot/1.2" https://{site.domain}/</code> shows up under GPTBot in the AI tab within seconds (marked
+          fake, because it didn't come from OpenAI's IPs).
+        </li>
+      </ol>
+      <p className="mt-4 text-sm text-stone-500">
+        The tracking script also reports automated browsers (AI agents driving Chrome) to the AI tab instead of counting them as visitors, and people
+        who click through from ChatGPT, Claude, Perplexity, Gemini and others are counted as the AI channel automatically. Prompt monitoring is on
+        the AI tab.
       </p>
     </Section>
   );

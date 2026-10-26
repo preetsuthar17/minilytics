@@ -23,6 +23,12 @@
   var ignored = false;
   try { ignored = localStorage.getItem('ml_ignore') === '1'; } catch (e) {}
   var local = /^(localhost|127\.|0\.0\.0\.0|\[::1\]|.*\.local$)/.test(loc.hostname) || loc.protocol === 'file:';
+  // An automated browser (an AI agent, a test runner...) isn't a visitor: report the page to the AI section once, then stay quiet.
+  if (siteId && !ignored && nav.webdriver && !(local && !allowLocal)) {
+    try {
+      fetch(endpoint, { method: 'POST', body: JSON.stringify({ w: siteId, t: 'agent', u: loc.origin + loc.pathname, r: d.referrer || undefined }), keepalive: true, credentials: 'omit', headers: { 'Content-Type': 'text/plain' } }).catch(noop);
+    } catch (e) {}
+  }
   if (!siteId || ignored || nav.webdriver || (local && !allowLocal)) {
     w.minilytics = noop;
     w.minilytics.attribution = function () { return {}; };

@@ -40,3 +40,11 @@ export async function purgeOldData(db: D1Database, value: string | undefined, no
   await db.batch(retentionStatements(db, cutoff));
   return cutoff;
 }
+
+/** AI crawler hits are high volume: keep AGENT_RETENTION_DAYS (default 180), or RETENTION_DAYS when that's shorter. */
+export async function purgeAgentHits(db: D1Database, agentDays: string | undefined, allDays: string | undefined, now = Date.now()) {
+  const days = Math.min(retentionDays(agentDays) ?? 180, retentionDays(allDays) ?? Infinity);
+  const cutoff = retentionCutoff(days, now);
+  await db.prepare('DELETE FROM agent_hits WHERE ts < ?').bind(cutoff).run();
+  return cutoff;
+}

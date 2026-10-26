@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { api, type Me } from './lib/api';
+import { AiPage } from './pages/AiPage';
 import { Billing } from './pages/Billing';
 import { Dashboard } from './pages/Dashboard';
 import { Landing } from './pages/Landing';
@@ -78,7 +79,8 @@ export function App() {
   } else {
     const settings = /^\/site\/([\w-]+)\/settings\/?$/.exec(path);
     const site = /^\/site\/([\w-]+)\/?$/.exec(path);
-    page = settings ? <Settings siteId={settings[1]} /> : site ? <Dashboard siteId={site[1]} /> : <Sites />;
+    const ai = /^\/site\/([\w-]+)\/ai\/?$/.exec(path);
+    page = settings ? <Settings siteId={settings[1]} /> : ai ? <AiPage siteId={ai[1]} /> : site ? <Dashboard siteId={site[1]} /> : <Sites />;
   }
   return <MeContext.Provider value={{ me, refresh }}>{page}</MeContext.Provider>;
 }

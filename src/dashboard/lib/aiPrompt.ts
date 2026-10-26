@@ -1,3 +1,4 @@
+import { agentPromptTask } from './agentSnippets';
 import type { Site } from './api';
 
 /**
@@ -45,6 +46,8 @@ Add data attributes to the most important calls-to-action (no JS needed), using 
 Optional details: data-ml-goal-plan="pro". From code: window.minilytics?.('goal', 'signup_completed', { plan: 'pro' }).
 Track at least: the main signup/get-started button(s), pricing-page plan buttons, and the checkout/buy button. Also fire window.minilytics?.('goal', 'signup_completed') after a successful signup.
 
+${agentPromptTask(origin)}
+
 ## TypeScript
 If the project uses TypeScript, add a global declaration so calls type-check:
   declare global { interface Window { minilytics?: ((cmd: 'goal' | 'identify' | 'pageview', a?: any, b?: any) => void) & { attribution?: () => { ml_visitor_id?: string; ml_session_id?: string } } } }
@@ -52,12 +55,13 @@ Always call it with optional chaining (window.minilytics?.(...)) so pages never 
 
 ## Rules
 - Make minimal, focused changes that match the existing code style. Don't refactor unrelated code.
-- Don't hardcode secrets. None are needed for this setup.
+- Don't hardcode secrets. The only one is MINILYTICS_API_KEY for Task 5, read from the environment.
 - The script ignores localhost by default. To test locally add data-allow-localhost to the script tag temporarily (remove it before committing), or test on the deployed site.
 
 ## When you are done, reply with
 1. A list of every file you changed and why.
 2. Which checkout/payment code paths now send ml_visitor_id / ml_session_id (and any you could not find or were unsure about).
 3. Which goals you added and where.
-4. How I can verify: open the site, in DevTools → Network a POST to ${origin}/api/event returns 202, and the visit appears in my Minilytics dashboard within seconds.`;
+4. Where the AI agent hook (Task 5) runs, and which env var I need to set.
+5. How I can verify: open the site, in DevTools → Network a POST to ${origin}/api/event returns 202, and the visit appears in my Minilytics dashboard within seconds.`;
 }

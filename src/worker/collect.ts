@@ -1,5 +1,7 @@
 import type { Context } from 'hono';
 import { classify, isPaymentOrAuthReferrer } from '../shared/sources';
+import { detectAgent, type AgentMatch } from '../shared/agents';
+import { recordHits } from './agents';
 import { siteOwnerActive } from './auth';
 import { getSite, type AppEnv, type Site } from './env';
 import { isBot, parseUA } from './lib/ua';
@@ -55,10 +57,13 @@ export async function handleEvent(c: Context<AppEnv>) {
   } catch {
     return c.body(null, 400);
   }
-  if (!body || !isId(body.w) || !TYPES.has(body.t) || !isId(body.vid) || !isId(body.sid)) return c.body(null, 400);
+  if (!body || !isId(body.w)) return c.body(null, 400);
 
   const ua = c.req.header('user-agent') ?? '';
-  if (isBot(ua)) return c.body(null, 202);
+  // AI agents and automated browsers that run the script go to the AI section instead of your visitor stats.
+  const signatureAgent = c.req.header('signature-agent') ?? null;
+  if (body.t === 'agent' || signatureAgent || isBot(ua)) return handleAgentEvent(c, body, ua, signatureAgent);
+  if (!TYPES.has(body.t) || !isId(body.vid) || !isId(body.sid)) return c.body(null, 400);
 
   const site = await getSite(c.env.DB, body.w);
   if (!site) return c.body(null, 404);
@@ -75,6 +80,36 @@ export async function handleEvent(c: Context<AppEnv>) {
   if (!belongsTo(url.hostname, site.domain)) return c.body(null, 403);
 
   await ingest(c.env.DB, site, body, url, ua, geoOf(c), Date.now());
+  return c.body(null, 202);
+}
+
+/** The script ran in an automated browser (navigator.webdriver), or the request came from a known AI agent. */
+async function handleAgentEvent(c: Context<AppEnv>, body: Payload, ua: string, signatureAgent: string | null) {
+  const automated = body.t === 'agent';
+  // Only page loads count; a known bot's goals/pings are dropped like before.
+  if (!automated && body.t !== 'pageview') return c.body(null, 202);
+  if (!automated && !detectAgent({ ua, signatureAgent })) return c.body(null, 202);
+  const site = await getSite(c.env.DB, body.w);
+  if (!site) return c.body(null, 404);
+  if (!siteOwnerActive(c.env, site)) return c.body(null, 202);
+  let url: URL;
+  try {
+    url = new URL(body.u);
+  } catch {
+    return c.body(null, 400);
+  }
+  if (!belongsTo(url.hostname, site.domain)) return c.body(null, 403);
+  const fallback: AgentMatch | undefined = automated
+    ? { name: 'Automated browser', operator: 'Unknown', domain: null, category: 'agent', signed: false }
+    : undefined;
+  await recordHits(
+    c.env.DB,
+    site,
+    [{ url: url.toString(), ua, ip: c.req.header('cf-connecting-ip'), signature_agent: signatureAgent ?? undefined, country: geoOf(c).country ?? undefined, referer: body.r }],
+    'script',
+    Date.now(),
+    fallback,
+  );
   return c.body(null, 202);
 }
 

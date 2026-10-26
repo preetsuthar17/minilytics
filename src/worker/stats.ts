@@ -68,7 +68,7 @@ function filterSql(f: Filters): { sql: string; params: unknown[] } {
 
 const hasFilters = (f: Filters) => Object.keys(f).length > 0;
 
-interface Ctx {
+export interface Ctx {
   db: D1Database;
   site: Site;
   range: Range;

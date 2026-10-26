@@ -6,10 +6,13 @@ import { clearSession, currentUser, googleCallback, googleStart, isHosted, requi
 import { billingWebhook, checkout, planInfo } from './billing';
 import { passwordsMatch, randomId } from './lib/crypto';
 import { handleDodoWebhook, handleGoalApi, handlePaymentApi, rematchPayments } from './payments';
-import { purgeOldData } from './retention';
+import { aiBreakdown, aiOverview, aiRecent, handleAgentApi, parseHitFilters, refreshIpLists } from './agents';
+import { engineInfo, monitorAllowed, runDuePrompts, runPrompt, ENGINES, configuredEngines, type EngineId } from './monitor';
+import { purgeAgentHits, purgeOldData } from './retention';
 import { breakdown, customers, funnel, makeCtx, overview, realtime, visitorProfile, visitors, type FunnelStep } from './stats';
 
 const app = new Hono<AppEnv>();
+const DAILY_CRON = '17 3 * * *';
 const MAX_FAILURES = 10;
 const LOCKOUT_MS = 15 * 60_000;
 
@@ -20,6 +23,7 @@ app.post('/api/event', handleEvent);
 app.post('/api/webhooks/dodo/:siteId', handleDodoWebhook);
 app.post('/api/v1/payments', handlePaymentApi);
 app.post('/api/v1/goals', handleGoalApi);
+app.post('/api/v1/agents', handleAgentApi);
 
 // ---------- login
 
@@ -191,10 +195,27 @@ app.patch('/api/sites/:id', async (c) => {
     const ids = b.dodo_product_ids.split(/[\s,]+/).filter((x) => /^pdt_[\w-]+$/.test(x));
     next.dodo_product_ids = ids.join(',') || null;
   }
+  if (typeof b.ai_brand_terms === 'string') {
+    const terms = b.ai_brand_terms.split(',').map((t) => t.trim().slice(0, 60)).filter(Boolean).slice(0, 10);
+    next.ai_brand_terms = terms.join(', ') || null;
+  }
+  if (typeof b.ai_monitor_days === 'number' && [0, 1, 3, 7, 14, 30].includes(b.ai_monitor_days)) next.ai_monitor_days = b.ai_monitor_days;
   await c.env.DB.prepare(
-    'UPDATE sites SET name = ?, domain = ?, timezone = ?, currency = ?, dodo_webhook_secret = ?, dodo_brand_id = ?, dodo_product_ids = ? WHERE id = ?',
+    `UPDATE sites SET name = ?, domain = ?, timezone = ?, currency = ?, dodo_webhook_secret = ?, dodo_brand_id = ?, dodo_product_ids = ?,
+       ai_brand_terms = ?, ai_monitor_days = ? WHERE id = ?`,
   )
-    .bind(next.name, next.domain, next.timezone, next.currency, next.dodo_webhook_secret, next.dodo_brand_id, next.dodo_product_ids ?? null, site.id)
+    .bind(
+      next.name,
+      next.domain,
+      next.timezone,
+      next.currency,
+      next.dodo_webhook_secret,
+      next.dodo_brand_id,
+      next.dodo_product_ids ?? null,
+      next.ai_brand_terms ?? null,
+      next.ai_monitor_days ?? 7,
+      site.id,
+    )
     .run();
   forgetSite(site.id);
   return c.json(publicSite(next));
@@ -210,7 +231,7 @@ app.post('/api/sites/:id/rotate-key', async (c) => {
 app.delete('/api/sites/:id', async (c) => {
   const id = c.get('site').id;
   await c.env.DB.batch(
-    ['events', 'sessions', 'visitors', 'payments', 'funnels'].map((t) =>
+    ['events', 'sessions', 'visitors', 'payments', 'funnels', 'agent_hits', 'ai_prompts', 'ai_prompt_runs'].map((t) =>
       c.env.DB.prepare(`DELETE FROM ${t} WHERE site_id = ?`).bind(id),
     ).concat(c.env.DB.prepare('DELETE FROM sites WHERE id = ?').bind(id)),
   );
@@ -290,6 +311,110 @@ app.get('/api/sites/:id/funnels/:fid/stats', async (c) => {
   return c.json(await funnel(makeCtx(c), JSON.parse(f.steps)));
 });
 
+// ---------- AI: crawlers, assistants and agents
+
+app.get('/api/sites/:id/ai/overview', async (c) => c.json(await aiOverview(makeCtx(c), parseHitFilters(c.req.query('filters')))));
+app.get('/api/sites/:id/ai/breakdown', async (c) => {
+  try {
+    const ctx = makeCtx(c);
+    return c.json(await aiBreakdown(ctx, parseHitFilters(c.req.query('filters')), c.req.query('dim') ?? 'agent', c.req.query('scope'), Number(c.req.query('limit')) || 100));
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400);
+  }
+});
+app.get('/api/sites/:id/ai/recent', async (c) => c.json(await aiRecent(makeCtx(c), parseHitFilters(c.req.query('filters')))));
+app.post('/api/sites/:id/ai/refresh-ips', async (c) => c.json(await refreshIpLists(c.env.DB)));
+
+// ---------- AI: prompt monitoring
+
+const MAX_PROMPTS = 50;
+
+async function ownerEmail(db: D1Database, site: Site) {
+  if (!site.owner_id) return null;
+  return (await db.prepare('SELECT email FROM users WHERE id = ?').bind(site.owner_id).first<{ email: string }>())?.email ?? null;
+}
+
+app.get('/api/sites/:id/ai/prompts', async (c) => {
+  const site = c.get('site');
+  const [prompts, latest, history] = await c.env.DB.batch([
+    c.env.DB.prepare('SELECT id, prompt, created_at FROM ai_prompts WHERE site_id = ? ORDER BY created_at').bind(site.id),
+    // The newest answer per prompt and engine.
+    c.env.DB.prepare(
+      `SELECT r.id, r.prompt_id, r.engine, r.model, r.ts, r.mentioned, r.cited, r.position, r.error, r.citations
+       FROM ai_prompt_runs r
+       JOIN (SELECT prompt_id, engine, MAX(ts) AS ts FROM ai_prompt_runs WHERE site_id = ? GROUP BY prompt_id, engine) l
+         ON l.prompt_id = r.prompt_id AND l.engine = r.engine AND l.ts = r.ts
+       WHERE r.site_id = ?`,
+    ).bind(site.id, site.id),
+    // Visibility over time: share of answers (per day) that mention or cite the site.
+    c.env.DB.prepare(
+      `SELECT strftime('%Y-%m-%d', ts / 1000, 'unixepoch') AS day, engine, COUNT(*) AS runs, SUM(mentioned) AS mentioned, SUM(cited) AS cited
+       FROM ai_prompt_runs WHERE site_id = ? AND error IS NULL AND ts > ? GROUP BY day, engine ORDER BY day`,
+    ).bind(site.id, Date.now() - 180 * 86_400_000),
+  ]);
+  const env = c.env;
+  return c.json({
+    engines: engineInfo(env),
+    allowed: monitorAllowed(env, { ...site, owner_email: await ownerEmail(c.env.DB, site) }),
+    brandTerms: site.ai_brand_terms ?? null,
+    days: site.ai_monitor_days ?? 7,
+    prompts: prompts.results,
+    latest: (latest.results as Record<string, unknown>[]).map((r) => ({ ...r, citations: JSON.parse(String(r.citations ?? '[]')) })),
+    history: history.results,
+  });
+});
+
+app.post('/api/sites/:id/ai/prompts', async (c) => {
+  const site = c.get('site');
+  const b = await c.req.json<{ prompt?: string; prompts?: string[] }>().catch(() => ({}) as { prompt?: string; prompts?: string[] });
+  const list = (b.prompts ?? [b.prompt ?? '']).map((p) => String(p).trim().slice(0, 500)).filter((p) => p.length >= 3);
+  if (!list.length) return c.json({ error: 'Write a question, e.g. "best React component library for dashboards"' }, 400);
+  const count = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM ai_prompts WHERE site_id = ?').bind(site.id).first<{ n: number }>();
+  if ((count?.n ?? 0) + list.length > MAX_PROMPTS) return c.json({ error: `A site can have at most ${MAX_PROMPTS} prompts` }, 400);
+  const now = Date.now();
+  const rows = list.map((prompt, i) => ({ id: randomId(8), prompt, created_at: now + i }));
+  await c.env.DB.batch(
+    rows.map((r) => c.env.DB.prepare('INSERT INTO ai_prompts (id, site_id, prompt, created_at) VALUES (?, ?, ?, ?)').bind(r.id, site.id, r.prompt, r.created_at)),
+  );
+  return c.json(rows);
+});
+
+app.delete('/api/sites/:id/ai/prompts/:pid', async (c) => {
+  const site = c.get('site');
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM ai_prompt_runs WHERE site_id = ? AND prompt_id = ?').bind(site.id, c.req.param('pid')),
+    c.env.DB.prepare('DELETE FROM ai_prompts WHERE site_id = ? AND id = ?').bind(site.id, c.req.param('pid')),
+  ]);
+  return c.json({ ok: true });
+});
+
+// Ask now, on every configured assistant (or just one with ?engine=claude). Takes up to a minute or two.
+app.post('/api/sites/:id/ai/prompts/:pid/run', async (c) => {
+  const site = c.get('site');
+  const p = await c.env.DB.prepare('SELECT id, prompt FROM ai_prompts WHERE site_id = ? AND id = ?')
+    .bind(site.id, c.req.param('pid'))
+    .first<{ id: string; prompt: string }>();
+  if (!p) return c.json({ error: 'prompt not found' }, 404);
+  if (!monitorAllowed(c.env, { ...site, owner_email: await ownerEmail(c.env.DB, site) })) return c.json({ error: 'Prompt monitoring is not available on this plan' }, 403);
+  const only = c.req.query('engine') as EngineId | undefined;
+  const engines = configuredEngines(c.env).filter((e) => !only || e.id === only);
+  if (!engines.length) {
+    return c.json({ error: `Add an API key first: ${ENGINES.map((e) => e.secret).join(', ')} (wrangler secret put …)` }, 400);
+  }
+  return c.json(await runPrompt(c.env.DB, c.env, site, p, engines));
+});
+
+// A prompt's past answers, newest first (for the answer viewer).
+app.get('/api/sites/:id/ai/prompts/:pid/runs', async (c) => {
+  const res = await c.env.DB.prepare(
+    `SELECT id, engine, model, ts, mentioned, cited, position, answer, citations, error FROM ai_prompt_runs
+     WHERE site_id = ? AND prompt_id = ? ORDER BY ts DESC LIMIT 40`,
+  )
+    .bind(c.get('site').id, c.req.param('pid'))
+    .all<Record<string, unknown>>();
+  return c.json(res.results.map((r) => ({ ...r, citations: JSON.parse(String(r.citations ?? '[]')) })));
+});
+
 app.all('/api/*', (c) => c.json({ error: 'not found' }, 404));
 
 // Everything else is the dashboard (static files).
@@ -297,8 +422,15 @@ app.all('*', (c) => c.env.ASSETS.fetch(c.req.raw));
 
 export default {
   fetch: app.fetch,
-  // Daily cleanup (cron in wrangler.jsonc). Does nothing unless RETENTION_DAYS is set.
-  scheduled(_controller: ScheduledController, env: AppEnv['Bindings'], ctx: ExecutionContext) {
-    ctx.waitUntil(purgeOldData(env.DB, env.RETENTION_DAYS));
+  // Crons in wrangler.jsonc. Daily: cleanup (raw analytics only when RETENTION_DAYS is set) and fresh AI IP ranges.
+  // Hourly: prompt monitoring, a few prompts at a time.
+  scheduled(controller: ScheduledController, env: AppEnv['Bindings'], ctx: ExecutionContext) {
+    if (controller.cron === DAILY_CRON) {
+      ctx.waitUntil(purgeOldData(env.DB, env.RETENTION_DAYS));
+      ctx.waitUntil(purgeAgentHits(env.DB, env.AGENT_RETENTION_DAYS, env.RETENTION_DAYS));
+      ctx.waitUntil(refreshIpLists(env.DB).catch(() => {}));
+    } else {
+      ctx.waitUntil(runDuePrompts(env.DB, env));
+    }
   },
 } satisfies ExportedHandler<AppEnv['Bindings']>;

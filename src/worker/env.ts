@@ -7,6 +7,18 @@ export interface Env {
   SESSION_SECRET: string;
   /** Optional: delete raw analytics older than this many days (`wrangler secret put RETENTION_DAYS`). */
   RETENTION_DAYS?: string;
+  /** Optional: days to keep AI crawler/agent hits (default 180; they're high volume). */
+  AGENT_RETENTION_DAYS?: string;
+
+  // ---- AI prompt monitoring, all optional. Each key turns one assistant on.
+  OPENAI_API_KEY?: string;
+  OPENAI_MODEL?: string;
+  ANTHROPIC_API_KEY?: string;
+  ANTHROPIC_MODEL?: string;
+  PERPLEXITY_API_KEY?: string;
+  PERPLEXITY_MODEL?: string;
+  GEMINI_API_KEY?: string;
+  GEMINI_MODEL?: string;
 
   // ---- Hosted (SaaS) mode, all optional. Setting the two Google values turns it on.
   GOOGLE_CLIENT_ID?: string;
@@ -40,6 +52,10 @@ export interface Site {
   created_at: number;
   owner_id?: string | null;
   dodo_product_ids?: string | null;
+  /** Prompt monitoring: comma-separated names that count as a mention of the brand. */
+  ai_brand_terms?: string | null;
+  /** Prompt monitoring: re-ask every N days (0 = only manually). */
+  ai_monitor_days?: number;
 }
 
 /** A site plus its owner's plan, used to stop recording when a hosted plan lapses. */

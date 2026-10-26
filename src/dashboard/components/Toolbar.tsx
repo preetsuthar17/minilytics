@@ -94,16 +94,29 @@ export function Toolbar({
   onRefresh,
   onLive,
   loading,
+  section = 'analytics',
 }: {
   site: Site;
   sites: Site[];
   q: Query;
   update: (p: Partial<Query>) => void;
-  overview: Overview | null;
+  overview: Pick<Overview, 'range'> | null;
   onRefresh: () => void;
-  onLive: () => void;
+  onLive?: () => void;
   loading: boolean;
+  section?: 'analytics' | 'ai';
 }) {
+  const sectionPath = section === 'ai' ? '/ai' : '';
+  // Switching sections keeps the date range; filters belong to one section, so they're dropped.
+  const switchTo = (to: 'analytics' | 'ai') => {
+    if (to === section) return;
+    const p = new URLSearchParams();
+    p.set('period', q.period);
+    if (q.from) p.set('from', q.from);
+    if (q.to) p.set('to', q.to);
+    if (q.granularity) p.set('granularity', q.granularity);
+    navigate(`/site/${site.id}${to === 'ai' ? '/ai' : ''}?${p}`);
+  };
   const [from, setFrom] = useState(q.from ?? '');
   const [to, setTo] = useState(q.to ?? '');
 
@@ -168,7 +181,7 @@ export function Toolbar({
                 className={itemCls(s.id === site.id)}
                 onClick={() => {
                   close();
-                  navigate(`/site/${s.id}${window.location.search}`);
+                  navigate(`/site/${s.id}${sectionPath}${window.location.search}`);
                 }}
               >
                 <Favicon domain={s.domain} size={16} /> {s.name}
@@ -184,6 +197,21 @@ export function Toolbar({
           </>
         )}
       </Dropdown>
+
+      <div className="flex h-11 items-stretch rounded-xl border border-stone-200 bg-white p-1 shadow-card" role="tablist" aria-label="Section">
+        {(['analytics', 'ai'] as const).map((t) => (
+          <button
+            key={t}
+            role="tab"
+            aria-selected={section === t}
+            className={`rounded-lg px-3 text-[15px] font-medium transition ${section === t ? 'bg-ink text-white' : 'text-stone-500 hover:text-ink'}`}
+            onClick={() => switchTo(t)}
+            title={t === 'ai' ? 'AI crawlers, assistants, agents and prompt monitoring' : 'Visitors and revenue'}
+          >
+            {t === 'ai' ? '✨ AI' : 'Analytics'}
+          </button>
+        ))}
+      </div>
 
       <div className="flex h-11 items-stretch rounded-xl border border-stone-200 bg-white shadow-card">
         <button className="rounded-l-xl px-3 text-xl text-stone-500 hover:bg-stone-50" onClick={() => shift(-1)} aria-label="Previous period" title="Previous period (←)">
@@ -273,9 +301,11 @@ export function Toolbar({
         }
       </Dropdown>
 
-      <button className="btn h-11 px-4 text-base" onClick={onLive} title="Live map (M)">
-        <span className="h-2 w-2 animate-pulse rounded-full bg-green-500" /> Live
-      </button>
+      {onLive && (
+        <button className="btn h-11 px-4 text-base" onClick={onLive} title="Live map (M)">
+          <span className="h-2 w-2 animate-pulse rounded-full bg-green-500" /> Live
+        </button>
+      )}
 
       <button className="btn h-11 w-11 px-0" onClick={onRefresh} aria-label="Refresh">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={loading ? 'animate-spin' : ''}>
