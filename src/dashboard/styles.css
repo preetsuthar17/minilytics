@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 html, body { background: #f8f6f3; color: #1c1917; }
-body { font-feature-settings: 'tnum' 1; -webkit-font-smoothing: antialiased; }
+body { font-weight: 490; font-feature-settings: 'tnum' 1; -webkit-font-smoothing: antialiased; }
 
 @layer components {
   .card { @apply rounded-2xl border border-stone-200/80 bg-white shadow-card; }
@@ -16,3 +16,10 @@ body { font-feature-settings: 'tnum' 1; -webkit-font-smoothing: antialiased; }
   .tab-active { @apply bg-white text-ink shadow-card; }
   .code { @apply block overflow-x-auto whitespace-pre rounded-xl bg-stone-900 p-4 font-mono text-[13px] leading-relaxed text-stone-100; }
 }
+
+@media (pointer: coarse) {
+  .input { font-size: 16px; }
+}
+
+@keyframes ml-tick { from { opacity: 0.3; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: no-preference) { .tick-in { animation: ml-tick 0.5s cubic-bezier(0.23, 1, 0.32, 1); } }

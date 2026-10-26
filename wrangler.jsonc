@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "minilytics",
+  "name": "preet-datafast",
+  "account_id": "ef1087da0ee7eb63ff60e490b6f43650",
   "main": "src/worker/index.ts",
   "compatibility_date": "2025-09-01",
   "observability": { "enabled": true },
@@ -16,9 +17,9 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "minilytics",
+      "database_name": "preet-datafast",
       // Replace with the id printed by `npx wrangler d1 create minilytics`.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "59fec98d-4f7a-4361-86b6-23cae8b2270a",
       "migrations_dir": "migrations"
     }
   ]

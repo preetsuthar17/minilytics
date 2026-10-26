@@ -69,6 +69,34 @@ export function domainForSource(name: string): string | undefined {
   return KNOWN_SOURCES.find((s) => s.name === name)?.domain || undefined;
 }
 
+/**
+ * Checkout and sign-in pages send people back to your site, but they are a step in a visit, not where it came from.
+ * A return from one of these counts as no referrer, so it never takes the credit from the visit that brought the buyer.
+ * Payment hosts only appear in the middle of a purchase, so the whole domain is ignored. Hosts that also link to
+ * sites for real (github.com, x.com, facebook.com, ...) are only ignored on their login/OAuth paths.
+ */
+const PAYMENT_OR_AUTH_HOST =
+  /^(([\w-]+\.)*dodopayments\.com|(?!www\.)[\w-]+\.stripe\.com|([\w-]+\.)*paypal\.(com|me)|(?!www\.)[\w-]+\.lemonsqueezy\.com|[\w-]+\.paddle\.com|([\w-]+\.)*paddle\.io|accounts\.google\.[a-z.]+|accounts\.youtube\.com|login\.microsoftonline\.com|login\.live\.com|appleid\.apple\.com|([\w-]+\.)*auth0\.com|([\w-]+\.)*clerk\.accounts\.dev|accounts\.clerk\.com|([\w-]+\.)*okta\.com|([\w-]+\.)*workos\.com|([\w-]+\.)*stytch\.com)$/;
+const AUTH_PATH: Record<string, RegExp> = {
+  'github.com': /^\/(login|session|sessions)(\/|$)/,
+  'gitlab.com': /^\/(users\/sign_in|oauth)(\/|$)/,
+  'x.com': /^\/(i\/oauth2|oauth)(\/|$)/,
+  'twitter.com': /^\/(i\/oauth2|oauth)(\/|$)/,
+  'api.twitter.com': /^\/oauth(\/|$)/,
+  'facebook.com': /^\/(v[\d.]+\/)?dialog\/oauth(\/|$)|^\/login(\/|$)/,
+  'discord.com': /^\/(oauth2|login)(\/|$)/,
+  'linkedin.com': /^\/(oauth|uas\/login|login)(\/|$)/,
+};
+
+/** Was this referrer a checkout or sign-in page? `path` is optional; without it only payment/auth-only hosts match. */
+export function isPaymentOrAuthReferrer(domain: string | null | undefined, path?: string | null): boolean {
+  if (!domain) return false;
+  const host = domain.toLowerCase().replace(/^www\./, '');
+  if (PAYMENT_OR_AUTH_HOST.test(host)) return true;
+  const authPath = AUTH_PATH[host];
+  return !!(authPath && path && authPath.test(path));
+}
+
 export interface Attribution {
   source: string;
   channel: Channel;
@@ -81,11 +109,13 @@ export interface Attribution {
  */
 export function classify(input: {
   referrerDomain: string | null;
+  referrerPath?: string | null;
   utmSource?: string | null;
   utmMedium?: string | null;
   ref?: string | null;
 }): Attribution {
-  const { referrerDomain, utmSource, utmMedium, ref } = input;
+  const { utmSource, utmMedium, ref } = input;
+  const referrerDomain = isPaymentOrAuthReferrer(input.referrerDomain, input.referrerPath) ? null : input.referrerDomain;
   const tag = utmSource || ref || null;
   const known = findKnownSource(tag) ?? findKnownSource(referrerDomain);
 

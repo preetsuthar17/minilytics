@@ -2,7 +2,7 @@ import { Hono, type Context, type Next } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { cors } from 'hono/cors';
 import { handleEvent } from './collect';
-import { forgetSite, type AppEnv, type Site } from './env';
+import { forgetSite, getSite, type AppEnv, type Site } from './env';
 import { passwordsMatch, randomId, signToken, verifyToken } from './lib/crypto';
 import { handleDodoWebhook, handleGoalApi, handlePaymentApi, rematchPayments } from './payments';
 import { purgeOldData } from './retention';
@@ -80,8 +80,16 @@ const requireAuth = async (c: Context<AppEnv>, next: Next) => {
 app.use('/api/sites', requireAuth);
 app.use('/api/sites/*', requireAuth);
 
+// Runs after requireAuth. Stats reads use the per-isolate site cache (up to 60s stale in other isolates);
+// settings reads and every write read the row fresh, so a save is never shown or applied on stale data.
 const loadSite = async (c: Context<AppEnv>, next: Next) => {
-  const site = await c.env.DB.prepare('SELECT * FROM sites WHERE id = ?').bind(c.req.param('id')).first<Site>();
+  const id = c.req.param('id')!;
+  // '/api/sites/:id/*' also matches '/api/sites/:id', so this can run twice for one request.
+  if (c.get('site')?.id === id) return next();
+  const fresh = c.req.method !== 'GET' || /^\/api\/sites\/[^/]+\/?$/.test(c.req.path);
+  const site = fresh
+    ? await c.env.DB.prepare('SELECT * FROM sites WHERE id = ?').bind(id).first<Site>()
+    : await getSite(c.env.DB, id);
   if (!site) return c.json({ error: 'site not found' }, 404);
   c.set('site', site);
   await next();
@@ -142,6 +150,7 @@ app.post('/api/sites', async (c) => {
     currency: (b.currency || 'USD').toUpperCase().slice(0, 3),
     api_key: 'ml_' + randomId(16),
     dodo_webhook_secret: null,
+    dodo_brand_id: null,
     created_at: Date.now(),
   };
   await c.env.DB.prepare(
@@ -172,8 +181,11 @@ app.patch('/api/sites/:id', async (c) => {
   if (typeof b.dodo_webhook_secret === 'string' && !b.dodo_webhook_secret.includes('•')) {
     next.dodo_webhook_secret = b.dodo_webhook_secret.trim() || null;
   }
-  await c.env.DB.prepare('UPDATE sites SET name = ?, domain = ?, timezone = ?, currency = ?, dodo_webhook_secret = ? WHERE id = ?')
-    .bind(next.name, next.domain, next.timezone, next.currency, next.dodo_webhook_secret, site.id)
+  if (typeof b.dodo_brand_id === 'string') next.dodo_brand_id = b.dodo_brand_id.trim().slice(0, 100) || null;
+  await c.env.DB.prepare(
+    'UPDATE sites SET name = ?, domain = ?, timezone = ?, currency = ?, dodo_webhook_secret = ?, dodo_brand_id = ? WHERE id = ?',
+  )
+    .bind(next.name, next.domain, next.timezone, next.currency, next.dodo_webhook_secret, next.dodo_brand_id, site.id)
     .run();
   forgetSite(site.id);
   return c.json(publicSite(next));
@@ -182,6 +194,7 @@ app.patch('/api/sites/:id', async (c) => {
 app.post('/api/sites/:id/rotate-key', async (c) => {
   const key = 'ml_' + randomId(16);
   await c.env.DB.prepare('UPDATE sites SET api_key = ? WHERE id = ?').bind(key, c.get('site').id).run();
+  forgetSite(c.get('site').id);
   return c.json({ api_key: key });
 });
 
@@ -199,6 +212,23 @@ app.delete('/api/sites/:id', async (c) => {
 // ---------- stats
 
 app.get('/api/sites/:id/overview', async (c) => c.json(await overview(makeCtx(c))));
+
+// Cheap change detector for the live dashboard: the version only moves when new data lands.
+app.get('/api/sites/:id/pulse', async (c) => {
+  const id = c.get('site').id;
+  const now = Date.now();
+  const [ev, pay, on] = await c.env.DB.batch([
+    c.env.DB.prepare('SELECT MAX(ts) AS t, COUNT(*) AS n FROM events WHERE site_id = ? AND ts > ?').bind(id, now - 3_600_000),
+    c.env.DB.prepare('SELECT MAX(ts) AS t, COUNT(*) AS n, COUNT(visitor_id) AS m FROM payments WHERE site_id = ? AND ts > ?').bind(id, now - 86_400_000),
+    c.env.DB.prepare(
+      'SELECT COUNT(DISTINCT visitor_id) AS n FROM sessions WHERE site_id = ? AND started_at > ? AND last_seen_at > ?',
+    ).bind(id, now - 6 * 3_600_000, now - 5 * 60_000),
+  ]);
+  const e = ev.results[0] as { t: number | null; n: number };
+  const p = pay.results[0] as { t: number | null; n: number; m: number };
+  c.header('Cache-Control', 'no-store');
+  return c.json({ v: `${e.t ?? 0}.${e.n}.${p.t ?? 0}.${p.n}.${p.m}`, online: (on.results[0] as { n: number }).n });
+});
 
 app.get('/api/sites/:id/breakdown', async (c) => {
   try {
@@ -222,10 +252,13 @@ app.get('/api/sites/:id/funnels', async (c) => {
 
 app.post('/api/sites/:id/funnels', async (c) => {
   const b = await c.req.json<{ name?: string; steps?: FunnelStep[] }>().catch(() => ({}) as { name?: string; steps?: FunnelStep[] });
-  const steps = (b.steps ?? [])
-    .filter((s) => (s.type === 'page' || s.type === 'goal') && typeof s.value === 'string' && s.value.trim())
-    .slice(0, 10)
-    .map((s) => ({ type: s.type, value: s.value.trim().slice(0, 200) }));
+  const raw = Array.isArray(b.steps) ? b.steps : [];
+  if (raw.length > 10) return c.json({ error: 'A funnel can have at most 10 steps' }, 400);
+  const bad = raw.findIndex(
+    (s) => !s || !['page', 'goal', 'payment'].includes(s.type) || (s.type !== 'payment' && !(typeof s.value === 'string' && s.value.trim())),
+  );
+  if (bad >= 0) return c.json({ error: `Step ${bad + 1} needs a type and a value` }, 400);
+  const steps = raw.map((s) => ({ type: s.type, value: s.type === 'payment' ? '' : s.value.trim().slice(0, 200) }));
   if (!b.name?.trim() || steps.length < 2) return c.json({ error: 'A funnel needs a name and at least 2 steps' }, 400);
   const id = randomId(8);
   await c.env.DB.prepare('INSERT INTO funnels (id, site_id, name, steps, created_at) VALUES (?, ?, ?, ?, ?)')

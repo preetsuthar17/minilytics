@@ -1,12 +1,13 @@
 import type { Context } from 'hono';
 import type { AppEnv, Site } from './env';
-import { bucketLabels, bucketSql, resolveRange, tzOffset, type Range } from './lib/time';
+import { bucketLabels, bucketSql, previousRange, resolveRange, tzOffset, type Range } from './lib/time';
 import { currencyDecimals } from './payments';
 
 /** Filters that live on the session row (clicking a row in the dashboard adds one of these). */
 const SESSION_FILTERS = [
   'channel',
   'source',
+  'referrer',
   'referrer_domain',
   'utm_source',
   'utm_medium',
@@ -73,13 +74,16 @@ interface Ctx {
   range: Range;
   filters: Filters;
   offset: number;
+  /** When the range was resolved; a range ending here is still running. */
+  now: number;
 }
 
 export function makeCtx(c: Context<AppEnv>): Ctx {
   const site = c.get('site');
   const q = c.req.query();
-  const range = resolveRange(q, site.timezone, site.created_at);
-  return { db: c.env.DB, site, range, filters: parseFilters(q.filters), offset: tzOffset(site.timezone, range.to) };
+  const now = Date.now();
+  const range = resolveRange(q, site.timezone, site.created_at, now);
+  return { db: c.env.DB, site, range, filters: parseFilters(q.filters), offset: tzOffset(site.timezone, range.to), now };
 }
 
 function sessionsWhere(ctx: Ctx, from = ctx.range.from, to = ctx.range.to) {
@@ -109,8 +113,17 @@ const KPI_SQL = (where: string) => `
          COALESCE(AVG(s.duration), 0) AS avg_duration
   FROM sessions s WHERE ${where}`;
 
-const REVENUE_SQL = (from: string) => `
-  SELECT COALESCE(SUM(p.amount), 0) AS revenue,
+/**
+ * Amounts are stored in minor units of their own currency, so only payments in the site currency are added up
+ * (Dodo payments are stored converted to it whenever Dodo settled in it). Other currencies still count as payments.
+ */
+function revenueSum(site: Site, alias = 'p') {
+  const currency = /^[A-Z]{3}$/.test(site.currency) ? site.currency : 'USD';
+  return `SUM(CASE WHEN ${alias}.currency = '${currency}' THEN ${alias}.amount ELSE 0 END)`;
+}
+
+const REVENUE_SQL = (site: Site, from: string) => `
+  SELECT COALESCE(${revenueSum(site)}, 0) AS revenue,
          COUNT(DISTINCT CASE WHEN p.kind = 'payment' AND p.renewal = 0 THEN COALESCE(p.visitor_id, p.id) END) AS customers,
          COALESCE(SUM(CASE WHEN p.kind = 'payment' THEN 1 ELSE 0 END), 0) AS payments
   FROM ${from}`;
@@ -146,20 +159,20 @@ function kpis(k: KpiRow, r: RevRow) {
 /** Top numbers + chart. */
 export async function overview(ctx: Ctx) {
   const { db, range, site } = ctx;
-  const prevFrom = range.from - (range.to - range.from);
+  const before = previousRange(range, site.timezone, ctx.now);
   const cur = sessionsWhere(ctx);
-  const prev = sessionsWhere(ctx, prevFrom, range.from);
+  const prev = sessionsWhere(ctx, before.from, before.to);
   const curPay = paymentsFrom(ctx);
-  const prevPay = paymentsFrom(ctx, prevFrom, range.from);
+  const prevPay = paymentsFrom(ctx, before.from, before.to);
   const sb = bucketSql('s.started_at', range.granularity, ctx.offset);
   const pb = bucketSql('p.ts', range.granularity, ctx.offset);
-  const now = Date.now();
+  const now = ctx.now;
 
   const [k1, k0, r1, r0, online, ts, tr] = await db.batch([
     db.prepare(KPI_SQL(cur.sql)).bind(...cur.params),
     db.prepare(KPI_SQL(prev.sql)).bind(...prev.params),
-    db.prepare(REVENUE_SQL(curPay.sql)).bind(...curPay.params),
-    db.prepare(REVENUE_SQL(prevPay.sql)).bind(...prevPay.params),
+    db.prepare(REVENUE_SQL(site, curPay.sql)).bind(...curPay.params),
+    db.prepare(REVENUE_SQL(site, prevPay.sql)).bind(...prevPay.params),
     db
       .prepare('SELECT COUNT(DISTINCT visitor_id) AS n FROM sessions WHERE site_id = ? AND started_at > ? AND last_seen_at > ?')
       .bind(site.id, now - 6 * 3_600_000, now - 5 * 60_000),
@@ -171,7 +184,7 @@ export async function overview(ctx: Ctx) {
       .bind(...cur.params),
     db
       .prepare(
-        `SELECT ${pb} AS b, SUM(p.amount) AS revenue, SUM(CASE WHEN p.kind = 'payment' THEN 1 ELSE 0 END) AS payments
+        `SELECT ${pb} AS b, ${revenueSum(site)} AS revenue, SUM(CASE WHEN p.kind = 'payment' THEN 1 ELSE 0 END) AS payments
          FROM ${curPay.sql} GROUP BY b`,
       )
       .bind(...curPay.params),
@@ -247,7 +260,7 @@ export async function breakdown(ctx: Ctx, dim: string, limit = 100): Promise<Bre
           params: pay.params,
         };
     const extraCol =
-      dim === 'source' ? 'MAX(s.referrer_domain)' : dim === 'region' || dim === 'city' ? 'MAX(s.country)' : 'NULL';
+      dim === 'source' || dim === 'referrer' ? 'MAX(s.referrer_domain)' : dim === 'region' || dim === 'city' ? 'MAX(s.country)' : 'NULL';
     const [v, r] = await db.batch([
       db
         .prepare(
@@ -257,7 +270,7 @@ export async function breakdown(ctx: Ctx, dim: string, limit = 100): Promise<Bre
         .bind(...w.params),
       db
         .prepare(
-          `SELECT ${col} AS label, SUM(p.amount) AS revenue,
+          `SELECT ${col} AS label, ${revenueSum(ctx.site)} AS revenue,
                   COUNT(DISTINCT CASE WHEN p.kind = 'payment' THEN COALESCE(p.visitor_id, p.id) END) AS customers
            FROM ${payJoin.sql} GROUP BY label`,
         )
@@ -279,14 +292,7 @@ export async function breakdown(ctx: Ctx, dim: string, limit = 100): Promise<Bre
         )
         .bind(...params),
       // Revenue from customers who viewed the page during the period.
-      db
-        .prepare(
-          `SELECT pv.label, SUM(p.amount) AS revenue, COUNT(DISTINCT p.visitor_id) AS customers
-           FROM (SELECT DISTINCT e.path AS label, e.visitor_id ${base}) pv
-           JOIN payments p ON p.site_id = ? AND p.visitor_id = pv.visitor_id AND p.ts >= ? AND p.ts < ?
-           GROUP BY pv.label`,
-        )
-        .bind(...params, ctx.site.id, ctx.range.from, ctx.range.to),
+      revenueByEvent(ctx, 'e.path', base, params),
     ]);
     return merge(v.results as any[], r.results as any[]);
   }
@@ -304,19 +310,31 @@ export async function breakdown(ctx: Ctx, dim: string, limit = 100): Promise<Bre
            GROUP BY label ORDER BY visitors DESC LIMIT ${lim}`,
         )
         .bind(...params),
-      db
-        .prepare(
-          `SELECT g.label, SUM(p.amount) AS revenue, COUNT(DISTINCT p.visitor_id) AS customers
-           FROM (SELECT DISTINCT e.name AS label, e.visitor_id ${base}) g
-           JOIN payments p ON p.site_id = ? AND p.visitor_id = g.visitor_id AND p.ts >= ? AND p.ts < ?
-           GROUP BY g.label`,
-        )
-        .bind(...params, ctx.site.id, ctx.range.from, ctx.range.to),
+      revenueByEvent(ctx, 'e.name', base, params),
     ]);
     return merge(v.results as any[], r.results as any[]);
   }
 
   throw new Error(`unknown dimension ${dim}`);
+}
+
+/**
+ * Revenue per page/goal/link from the visitors who paid in the period and had that event in the period.
+ * Starts from the (few) paying visitors and looks up their events by visitor, instead of scanning every event.
+ */
+function revenueByEvent(ctx: Ctx, labelCol: string, eventsFrom: string, eventsParams: unknown[]) {
+  return ctx.db
+    .prepare(
+      `WITH payers AS (
+         SELECT p.visitor_id, ${revenueSum(ctx.site)} AS revenue FROM payments p
+         WHERE p.site_id = ? AND p.ts >= ? AND p.ts < ? AND p.visitor_id IS NOT NULL GROUP BY p.visitor_id
+       ),
+       seen AS (SELECT DISTINCT ${labelCol} AS label, e.visitor_id ${eventsFrom} AND e.visitor_id IN (SELECT visitor_id FROM payers))
+       SELECT seen.label, SUM(payers.revenue) AS revenue, COUNT(*) AS customers
+       FROM seen JOIN payers ON payers.visitor_id = seen.visitor_id
+       GROUP BY seen.label ORDER BY seen.label`,
+    )
+    .bind(ctx.site.id, ctx.range.from, ctx.range.to, ...eventsParams);
 }
 
 function merge(visits: any[], revenue: any[]): BreakdownRow[] {
@@ -363,7 +381,7 @@ export async function visitors(ctx: Ctx) {
   const res = await ctx.db
     .prepare(
       `SELECT t.*, v.name, v.email, v.user_id, v.first_seen,
-              (SELECT COALESCE(SUM(amount), 0) FROM payments p WHERE p.site_id = t.site_id AND p.visitor_id = t.visitor_id) AS spent
+              (SELECT COALESCE(${revenueSum(ctx.site)}, 0) FROM payments p WHERE p.site_id = t.site_id AND p.visitor_id = t.visitor_id) AS spent
        FROM (
          SELECT s.site_id, s.visitor_id, MAX(s.last_seen_at) AS last_seen, COUNT(*) AS sessions, SUM(s.pageviews) AS pageviews,
                 SUM(s.duration) AS duration, s.source, s.referrer_domain, s.country, s.city, s.device, s.os, s.browser
@@ -397,49 +415,77 @@ export async function visitorProfile(db: D1Database, site: Site, vid: string) {
 }
 
 export interface FunnelStep {
-  type: 'page' | 'goal';
-  value: string; // page paths support * wildcards, e.g. /blog/*
+  type: 'page' | 'goal' | 'payment';
+  value: string; // page paths support * wildcards, e.g. /blog/*; empty for payment steps
   label?: string;
 }
 
-/** Visitors who completed each step, in order, within the period. */
+type FunnelRow = { v: string; ts: number; type: string; name: string | null; path: string | null; amount?: number; currency?: string };
+
+/** Visitors who completed each step, in order, within the period. A payment step is a positive payment (not a refund). */
 export async function funnel(ctx: Ctx, steps: FunnelStep[]) {
   if (!steps.length) return [];
   const f = filterSql(ctx.filters);
-  const join = hasFilters(ctx.filters) ? 'JOIN sessions s ON s.site_id = e.site_id AND s.id = e.session_id' : '';
+  const filtered = hasFilters(ctx.filters);
+  const join = filtered ? 'JOIN sessions s ON s.site_id = e.site_id AND s.id = e.session_id' : '';
   const conds: string[] = [];
   const params: unknown[] = [];
   for (const st of steps) {
     if (st.type === 'goal') {
       conds.push(`(e.type = 'goal' AND e.name = ?)`);
       params.push(st.value);
-    } else {
+    } else if (st.type === 'page') {
       conds.push(`(e.type = 'pageview' AND e.path GLOB ?)`);
       params.push(st.value);
     }
   }
-  const rows = (
-    await ctx.db
-      .prepare(
-        `SELECT e.visitor_id AS v, e.ts, e.type, e.name, e.path FROM events e ${join}
-         WHERE e.site_id = ? AND e.ts >= ? AND e.ts < ? AND (${conds.join(' OR ')})${f.sql}
-         ORDER BY e.ts LIMIT 100000`,
-      )
-      .bind(ctx.site.id, ctx.range.from, ctx.range.to, ...params, ...f.params)
-      .all<{ v: string; ts: number; type: string; name: string | null; path: string }>()
-  ).results;
+  const queries: Promise<FunnelRow[]>[] = [];
+  if (conds.length) {
+    queries.push(
+      ctx.db
+        .prepare(
+          `SELECT e.visitor_id AS v, e.ts, e.type, e.name, e.path FROM events e ${join}
+           WHERE e.site_id = ? AND e.ts >= ? AND e.ts < ? AND (${conds.join(' OR ')})${f.sql}
+           ORDER BY e.ts LIMIT 100000`,
+        )
+        .bind(ctx.site.id, ctx.range.from, ctx.range.to, ...params, ...f.params)
+        .all<FunnelRow>()
+        .then((r) => r.results),
+    );
+  }
+  if (steps.some((st) => st.type === 'payment')) {
+    const payJoin = filtered ? 'JOIN sessions s ON s.site_id = p.site_id AND s.id = p.session_id' : '';
+    queries.push(
+      ctx.db
+        .prepare(
+          `SELECT p.visitor_id AS v, p.ts, 'payment' AS type, NULL AS name, NULL AS path, p.amount, p.currency FROM payments p ${payJoin}
+           WHERE p.site_id = ? AND p.ts >= ? AND p.ts < ? AND p.visitor_id IS NOT NULL AND p.kind = 'payment' AND p.amount > 0${f.sql}
+           ORDER BY p.ts LIMIT 100000`,
+        )
+        .bind(ctx.site.id, ctx.range.from, ctx.range.to, ...f.params)
+        .all<FunnelRow>()
+        .then((r) => r.results),
+    );
+  }
+  const rows = (await Promise.all(queries)).flat().sort((a, b) => a.ts - b.ts);
 
   const matchers = steps.map((st) => {
-    if (st.type === 'goal') return (r: (typeof rows)[0]) => r.type === 'goal' && r.name === st.value;
+    if (st.type === 'payment') return (r: FunnelRow) => r.type === 'payment';
+    if (st.type === 'goal') return (r: FunnelRow) => r.type === 'goal' && r.name === st.value;
     const re = new RegExp('^' + st.value.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
-    return (r: (typeof rows)[0]) => r.type === 'pageview' && re.test(r.path);
+    return (r: FunnelRow) => r.type === 'pageview' && re.test(r.path ?? '');
   });
+  const currency = /^[A-Z]{3}$/.test(ctx.site.currency) ? ctx.site.currency : 'USD';
+  const revenue = steps.map(() => 0);
   const progress = new Map<string, number>();
   for (const r of rows) {
     const at = progress.get(r.v) ?? 0;
-    if (at < steps.length && matchers[at](r)) progress.set(r.v, at + 1);
+    if (at < steps.length && matchers[at](r)) {
+      progress.set(r.v, at + 1);
+      if (r.type === 'payment' && r.currency === currency) revenue[at] += r.amount ?? 0;
+    }
   }
   const counts = steps.map(() => 0);
   for (const reached of progress.values()) for (let i = 0; i < reached; i++) counts[i]++;
-  return steps.map((st, i) => ({ ...st, visitors: counts[i] }));
+  return steps.map((st, i) => (st.type === 'payment' ? { ...st, visitors: counts[i], revenue: revenue[i] } : { ...st, visitors: counts[i] }));
 }

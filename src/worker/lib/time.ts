@@ -106,6 +106,21 @@ export function resolveRange(
 }
 
 /** SQLite expression that turns a ms timestamp column into a bucket label in site time. */
+/**
+ * The window to compare `range` with. A range that is still running (ends now) and starts at a local midnight
+ * ("today", "7d", ...) is a partial period: compare it with the same stretch of the previous full period
+ * (today 00:00–03:38 vs yesterday 00:00–03:38), not with the hours just before it (yesterday 20:22–24:00).
+ * Anything else is a whole period and is compared with the one right before it.
+ */
+export function previousRange(range: Range, tz: string, now: number): { from: number; to: number } {
+  const span = range.to - range.from;
+  if (range.to < now || startOfDay(range.from, tz) !== range.from) return { from: range.from - span, to: range.from };
+  const days = Math.round((startOfDay(range.to, tz) - range.from) / DAY) + 1;
+  // +2h before snapping to midnight absorbs a daylight saving shift in between.
+  const from = startOfDay(range.from - days * DAY + 2 * HOUR, tz);
+  return { from, to: from + span };
+}
+
 export function bucketSql(col: string, g: Granularity, offsetMs: number): string {
   const t = `((${col} + ${Math.trunc(offsetMs)}) / 1000)`;
   switch (g) {

@@ -17,19 +17,23 @@ export interface Site {
   currency: string;
   api_key: string;
   dodo_webhook_secret: string | null;
+  /** Only record Dodo payments from this brand (one Dodo business, several brands). */
+  dodo_brand_id: string | null;
   created_at: number;
 }
 
 export type AppEnv = { Bindings: Env; Variables: { site: Site } };
 
-const siteCache = new Map<string, { site: Site | null; at: number }>();
+const siteCache = new Map<string, { site: Site; at: number }>();
 
 /** Sites change rarely; cache them per isolate so ingestion costs one fewer read per event. */
 export async function getSite(db: D1Database, id: string): Promise<Site | null> {
   const hit = siteCache.get(id);
   if (hit && Date.now() - hit.at < 60_000) return hit.site;
   const site = await db.prepare('SELECT * FROM sites WHERE id = ?').bind(id).first<Site>();
-  siteCache.set(id, { site, at: Date.now() });
+  // Only real sites are cached, so requests for random ids can't grow the cache.
+  if (site) siteCache.set(id, { site, at: Date.now() });
+  else siteCache.delete(id);
   return site;
 }
 

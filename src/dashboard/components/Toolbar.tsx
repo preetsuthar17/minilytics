@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { cloneElement, isValidElement, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { navigate } from '../App';
 import type { Overview, Query, Site } from '../lib/api';
 import { dayInTz } from '../lib/format';
@@ -16,6 +16,9 @@ export const PERIODS: { value: string; label: string }[] = [
   { value: 'all', label: 'All time' },
 ];
 
+const SHORTCUTS: Record<string, string> = { t: 'today', y: 'yesterday', '7': '7d', '3': '30d', a: 'all' };
+const HINTS = Object.fromEntries(Object.entries(SHORTCUTS).map(([k, v]) => [v, k.toUpperCase()]));
+
 const GRANULARITIES = [
   { value: 'hour', label: 'Hourly' },
   { value: 'day', label: 'Daily' },
@@ -23,22 +26,45 @@ const GRANULARITIES = [
   { value: 'month', label: 'Monthly' },
 ];
 
-export function Dropdown({ button, children, align = 'left' }: { button: ReactNode; children: (close: () => void) => ReactNode; align?: 'left' | 'right' }) {
+export function Dropdown({
+  button,
+  children,
+  align = 'left',
+  onOpen,
+}: {
+  button: ReactNode;
+  children: (close: () => void) => ReactNode;
+  align?: 'left' | 'right';
+  onOpen?: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
     const on = (e: MouseEvent) => ref.current && !ref.current.contains(e.target as Node) && setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setOpen(false);
+      if (ref.current?.contains(document.activeElement)) ref.current.querySelector<HTMLElement>('button')?.focus();
+    };
     document.addEventListener('mousedown', on);
-    return () => document.removeEventListener('mousedown', on);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', on);
+      document.removeEventListener('keydown', onKey);
+    };
   }, [open]);
+  const toggle = () => {
+    if (!open) onOpen?.();
+    setOpen(!open);
+  };
   return (
     <div className="relative flex" ref={ref}>
-      <div className="flex" onClick={() => setOpen((o) => !o)}>
-        {button}
+      <div className="flex" onClick={toggle}>
+        {isValidElement(button) ? cloneElement(button as ReactElement<{ 'aria-expanded'?: boolean }>, { 'aria-expanded': open }) : button}
       </div>
       {open && (
-        <div className={`card absolute top-full z-40 mt-2 min-w-[200px] overflow-hidden p-1 ${align === 'right' ? 'right-0' : 'left-0'}`}>
+        <div className={`card absolute top-full z-40 mt-2 min-w-[200px] max-w-[calc(100vw-2rem)] overflow-hidden p-1 ${align === 'right' ? 'right-0' : 'left-0'}`}>
           {children(() => setOpen(false))}
         </div>
       )}
@@ -94,6 +120,30 @@ export function Toolbar({
   }
   const canForward = overview ? overview.range.to < Date.now() - 60_000 : false;
 
+  const keys = useRef<(e: KeyboardEvent) => void>(() => {});
+  keys.current = (e) => {
+    if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (document.querySelector('[aria-modal="true"]')) return;
+    const period = SHORTCUTS[e.key.toLowerCase()];
+    if (period) {
+      e.preventDefault();
+      update({ period, granularity: undefined });
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      shift(-1);
+    } else if (e.key === 'ArrowRight' && canForward) {
+      e.preventDefault();
+      shift(1);
+    }
+  };
+  useEffect(() => {
+    const on = (e: KeyboardEvent) => keys.current(e);
+    window.addEventListener('keydown', on);
+    return () => window.removeEventListener('keydown', on);
+  }, []);
+
   return (
     <div className="flex flex-wrap items-center gap-2">
       <Dropdown
@@ -131,7 +181,7 @@ export function Toolbar({
       </Dropdown>
 
       <div className="flex h-11 items-stretch rounded-xl border border-stone-200 bg-white shadow-card">
-        <button className="rounded-l-xl px-3 text-xl text-stone-500 hover:bg-stone-50" onClick={() => shift(-1)} aria-label="Previous period">
+        <button className="rounded-l-xl px-3 text-xl text-stone-500 hover:bg-stone-50" onClick={() => shift(-1)} aria-label="Previous period" title="Previous period (←)">
           ‹
         </button>
         <Dropdown
@@ -140,6 +190,10 @@ export function Toolbar({
               {label} <Chevron />
             </button>
           }
+          onOpen={() => {
+            setFrom(q.from ?? '');
+            setTo(q.to ?? '');
+          }}
         >
           {(close) => (
             <>
@@ -153,6 +207,7 @@ export function Toolbar({
                   }}
                 >
                   {p.label}
+                  {HINTS[p.value] && <kbd className="ml-auto hidden rounded border border-stone-200 px-1.5 font-sans text-[11px] leading-4 text-stone-500 sm:block">{HINTS[p.value]}</kbd>}
                 </button>
               ))}
               <div className="my-1 border-t border-stone-100" />
@@ -178,12 +233,14 @@ export function Toolbar({
           onClick={() => shift(1)}
           disabled={!canForward}
           aria-label="Next period"
+          title="Next period (→)"
         >
           ›
         </button>
       </div>
 
       <Dropdown
+        align="right"
         button={
           <button className="btn h-11 px-4 text-base">
             {GRANULARITIES.find((g) => g.value === (q.granularity ?? overview?.range.granularity))?.label ?? 'Daily'} <Chevron />

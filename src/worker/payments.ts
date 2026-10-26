@@ -24,9 +24,26 @@ interface PaymentInput {
   name?: string | null;
   subscriptionId?: string | null;
   renewal?: boolean;
+  /** For refunds: the payment being refunded. */
+  refundOf?: string | null;
 }
 
 export type MatchedBy = 'metadata' | 'return_page' | 'customer' | 'email' | 'timing';
+
+/**
+ * Give unlinked refunds the visitor and visit of their payment once that payment is linked
+ * (return page seen after the refund, or a rematch). `ofSql` selects the payment ids, with `?` params.
+ */
+export function linkRefunds(db: D1Database, siteId: string, ofSql: string, params: unknown[]) {
+  const orig = (col: string) => `(SELECT o.${col} FROM payments o WHERE o.site_id = payments.site_id AND o.id = payments.refund_of)`;
+  return db
+    .prepare(
+      `UPDATE payments SET visitor_id = ${orig('visitor_id')}, session_id = ${orig('session_id')}, matched_by = ${orig('matched_by')}
+       WHERE site_id = ? AND kind = 'refund' AND visitor_id IS NULL AND refund_of IN (${ofSql})
+         AND ${orig('visitor_id')} IS NOT NULL`,
+    )
+    .bind(siteId, ...params);
+}
 
 /** The visit that gets the credit: the visitor's last visit that came from somewhere (last non-direct touch). */
 export function creditedSessionSql() {
@@ -57,7 +74,23 @@ async function attribute(db: D1Database, site: Site, p: PaymentInput) {
     if (claim) [visitorId, matchedBy] = [claim.visitor_id, 'return_page'];
   }
 
-  if (p.customerId || p.email) {
+  // Same subscription or customer paid earlier: a renewal or repeat purchase, even if that first payment was never
+  // linked to a visitor. It keeps the first payment's visit as the credit (the original acquisition).
+  let first: { visitor_id: string | null; session_id: string | null } | null = null;
+  if (p.kind === 'payment' && (p.subscriptionId || p.customerId || p.email)) {
+    first = await db
+      .prepare(
+        `SELECT visitor_id, session_id FROM payments WHERE site_id = ? AND kind = 'payment' AND (ts < ? OR (ts = ? AND id < ?))
+           AND ((subscription_id IS NOT NULL AND subscription_id = ?) OR (customer_id IS NOT NULL AND customer_id = ?)
+                OR (email IS NOT NULL AND email = ?))
+         ORDER BY ts ASC, id ASC LIMIT 1`,
+      )
+      .bind(site.id, p.ts, p.ts, p.id, p.subscriptionId ?? null, p.customerId ?? null, p.email ?? null)
+      .first<{ visitor_id: string | null; session_id: string | null }>();
+    if (first) renewal = true;
+  }
+
+  if (!visitorId && (p.customerId || p.email)) {
     const prev = await db
       .prepare(
         `SELECT visitor_id FROM payments WHERE site_id = ? AND kind = 'payment' AND visitor_id IS NOT NULL AND id != ?
@@ -66,11 +99,7 @@ async function attribute(db: D1Database, site: Site, p: PaymentInput) {
       )
       .bind(site.id, p.id, p.customerId ?? null, p.email ?? null)
       .first<{ visitor_id: string }>();
-    if (prev) {
-      if (!visitorId) [visitorId, matchedBy] = [prev.visitor_id, 'customer'];
-      // Same customer paid before: a subscription renewal or repeat purchase.
-      if (p.kind === 'payment') renewal = true;
-    }
+    if (prev) [visitorId, matchedBy] = [prev.visitor_id, 'customer'];
   }
   if (!visitorId && p.email) {
     const v = await db
@@ -87,7 +116,9 @@ async function attribute(db: D1Database, site: Site, p: PaymentInput) {
   }
 
   let sessionId: string | null = null;
-  if (visitorId) {
+  if (visitorId && renewal && first?.session_id && first.visitor_id === visitorId) {
+    sessionId = first.session_id;
+  } else if (visitorId) {
     const s = await db.prepare(creditedSessionSql()).bind(site.id, visitorId, p.ts + 60_000).first<{ id: string }>();
     sessionId = s?.id ?? p.sessionId ?? null;
   }
@@ -150,8 +181,8 @@ export async function recordPayment(db: D1Database, site: Site, p: PaymentInput)
   const stmts = [
     db
       .prepare(
-        `INSERT OR IGNORE INTO payments (id, site_id, provider, ts, amount, kind, currency, visitor_id, session_id, customer_id, email, name, renewal, matched_by, subscription_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR IGNORE INTO payments (id, site_id, provider, ts, amount, kind, currency, visitor_id, session_id, customer_id, email, name, renewal, matched_by, subscription_id, refund_of)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         p.id,
@@ -169,6 +200,7 @@ export async function recordPayment(db: D1Database, site: Site, p: PaymentInput)
         renewal ? 1 : 0,
         matchedBy,
         p.subscriptionId ?? null,
+        p.refundOf ?? null,
       ),
   ];
   // A payment tells us who an anonymous visitor really is.
@@ -212,6 +244,7 @@ export async function rematchPayments(db: D1Database, site: Site) {
       db
         .prepare('UPDATE payments SET visitor_id = ?, session_id = ?, matched_by = ?, renewal = ? WHERE site_id = ? AND id = ?')
         .bind(a.visitorId, a.sessionId, a.matchedBy, a.renewal ? 1 : 0, site.id, r.id),
+      linkRefunds(db, site.id, '?', [r.id]),
       db.prepare('INSERT OR IGNORE INTO visitors (site_id, id, first_seen) VALUES (?, ?, ?)').bind(site.id, a.visitorId, r.ts),
       db
         .prepare('UPDATE visitors SET email = COALESCE(email, ?), name = COALESCE(name, ?) WHERE site_id = ? AND id = ?')
@@ -253,6 +286,11 @@ export async function handleDodoWebhook(c: Context<AppEnv>) {
   const meta = { ...(customer.metadata as object), ...(data.metadata as object) } as Record<string, unknown>;
   const ts = Date.parse(data.created_at ?? event.timestamp ?? '') || Date.now();
 
+  // Dodo sends every brand's payments to every webhook; skip ones from another brand (or with no brand at all).
+  if (event.type === 'payment.succeeded' && site.dodo_brand_id && str(data.brand_id) !== site.dodo_brand_id) {
+    return c.json({ ok: true, skipped: 'other brand' });
+  }
+
   if (event.type === 'payment.succeeded') {
     let amount = Number(data.total_amount) || 0;
     let currency = String(data.currency ?? site.currency);
@@ -277,23 +315,37 @@ export async function handleDodoWebhook(c: Context<AppEnv>) {
   } else if (event.type === 'refund.succeeded') {
     const original = await c.env.DB.prepare('SELECT * FROM payments WHERE id = ? AND site_id = ?')
       .bind(String(data.payment_id), site.id)
-      .first<{ visitor_id: string | null; session_id: string | null; currency: string; amount: number }>();
-    const amount = Number(data.amount) || original?.amount || 0;
+      .first<{ id: string; visitor_id: string | null; session_id: string | null; matched_by: string | null; currency: string; amount: number }>();
+    // Only refund payments this site recorded: the Dodo business may be shared with other products,
+    // and refunds don't say which brand they're from.
+    if (!original) return c.json({ ok: true, skipped: 'unknown payment' });
+    // Store the refund like its payment was stored: in the site currency when the payment was converted to it.
+    let amount = Math.abs(Number(data.amount) || 0) || Math.abs(original.amount);
+    let currency = String(data.currency ?? original.currency).toUpperCase();
+    if (currency !== original.currency) {
+      if (str(data.settlement_currency)?.toUpperCase() === original.currency && Number(data.settlement_amount)) {
+        [amount, currency] = [Math.abs(Number(data.settlement_amount)), original.currency];
+      } else if (data.is_partial !== true) {
+        [amount, currency] = [Math.abs(original.amount), original.currency];
+      }
+    }
     await c.env.DB.prepare(
-      `INSERT OR IGNORE INTO payments (id, site_id, provider, ts, amount, kind, currency, visitor_id, session_id, customer_id, email, name)
-       VALUES (?, ?, 'dodo', ?, ?, 'refund', ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO payments (id, site_id, provider, ts, amount, kind, currency, visitor_id, session_id, customer_id, email, name, matched_by, refund_of)
+       VALUES (?, ?, 'dodo', ?, ?, 'refund', ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         String(data.refund_id ?? `refund_${data.payment_id}`),
         site.id,
         ts,
-        -Math.abs(amount),
-        String(data.currency ?? original?.currency ?? site.currency).toUpperCase(),
-        original?.visitor_id ?? null,
-        original?.session_id ?? null,
+        -amount,
+        currency,
+        original.visitor_id,
+        original.session_id,
         str(customer.customer_id),
         str(customer.email)?.toLowerCase() ?? null,
         str(customer.name),
+        original.matched_by,
+        original.id,
       )
       .run();
   }
@@ -335,6 +387,7 @@ export async function handlePaymentApi(c: Context<AppEnv>) {
     email: str(b.email)?.toLowerCase() ?? null,
     name: str(b.name),
     renewal: b.renewal === true,
+    refundOf: refunded ? `${site.id}:${b.transaction_id}` : null,
   });
   return c.json({ ok: true, attributed: !!res.sessionId, visitor_id: res.visitorId });
 }

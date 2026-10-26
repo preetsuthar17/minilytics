@@ -70,15 +70,16 @@
 
   // ---- transport
   // Personal data in URLs (e.g. ?email= on a payment return page) never leaves the browser.
-  var PRIVATE_PARAM = /^(e-?mail|name|phone|password|pass|token|access_token|id_token|auth|code|secret|key|api_key|license_key|license)$/i;
+  var PRIVATE_PARAM = /^(e-?mail|name|phone|password|pass|token|access_token|id_token|auth|code|secret|key|api_key|license_key|license|otp|sig|signature|jwt|invite|claim)$/i;
   function cleanUrl(href) {
     try {
       var u = new URL(href);
       var drop = [];
       u.searchParams.forEach(function (_, k) { if (PRIVATE_PARAM.test(k)) drop.push(k); });
       for (var i = 0; i < drop.length; i++) u.searchParams.delete(drop[i]);
+      u.hash = '';
       return u.toString();
-    } catch (e) { return href; }
+    } catch (e) { return String(href).split('#')[0]; }
   }
   function send(type, extra, beacon) {
     var id = ids();
@@ -111,9 +112,11 @@
   }, 60000);
 
   // ---- pageviews (including single-page-app navigation)
+  // Only the path counts as a new page (the server stores just the path), so a replaceState that only
+  // changes the query string doesn't log a second view.
   var lastPage = null, firstView = true;
   function pageview() {
-    var page = loc.pathname + loc.search;
+    var page = loc.pathname;
     if (page === lastPage) return;
     if (lastPage !== null) flushTime(false);
     lastPage = page;
@@ -129,6 +132,10 @@
     });
     w.addEventListener('popstate', pageview);
   }
+  // Back/forward cache restores the page without reloading the script: count it as a new view.
+  w.addEventListener('pageshow', function (e) {
+    if (e.persisted) { lastPage = null; pageview(); }
+  });
 
   // ---- goals, outbound links, Dodo Payments checkout links
   function goal(name, props) {

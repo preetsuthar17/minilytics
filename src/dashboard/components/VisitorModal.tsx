@@ -82,18 +82,18 @@ export function VisitorModal({ visitorId, onClose }: { visitorId: string | null;
                     {s.referrer && <span className="max-w-[260px] truncate text-stone-500">{s.referrer}</span>}
                     {s.utm_campaign && <span className="rounded-md bg-amber-50 px-2 py-0.5 text-amber-700">campaign: {s.utm_campaign}</span>}
                     {s.ref && <span className="rounded-md bg-amber-50 px-2 py-0.5 text-amber-700">ref: {s.ref}</span>}
-                    <span className="text-stone-400">{fmtDuration(s.duration)}</span>
+                    <span className="text-stone-500">{fmtDuration(s.duration)}</span>
                   </div>
                   <ol className="mt-2 space-y-1 text-sm">
                     {evs.map((e, i) => (
                       <li key={i} className="flex items-start gap-2">
-                        <span className="w-14 shrink-0 text-xs leading-5 text-stone-400">
+                        <span className="w-14 shrink-0 text-xs leading-5 text-stone-500">
                           {new Intl.DateTimeFormat('en', { timeZone: site.timezone, hour: 'numeric', minute: '2-digit' }).format(e.ts)}
                         </span>
                         {e.type === 'pageview' && <span className="text-stone-700">📄 {e.path}</span>}
                         {e.type === 'goal' && (
                           <span className="font-medium text-violet-700">
-                            🎯 {e.name} <span className="font-normal text-stone-400">on {e.path}</span>
+                            🎯 {e.name} <span className="font-normal text-stone-500">on {e.path}</span>
                           </span>
                         )}
                         {e.type === 'outbound' && <span className="text-stone-600">↗ Left to {e.name?.replace(/^https?:\/\//, '')}</span>}
@@ -101,7 +101,7 @@ export function VisitorModal({ visitorId, onClose }: { visitorId: string | null;
                     ))}
                     {pays.map((x) => (
                       <li key={x.id} className="flex items-start gap-2">
-                        <span className="w-14 shrink-0 text-xs leading-5 text-stone-400">
+                        <span className="w-14 shrink-0 text-xs leading-5 text-stone-500">
                           {new Intl.DateTimeFormat('en', { timeZone: site.timezone, hour: 'numeric', minute: '2-digit' }).format(x.ts)}
                         </span>
                         <span className="font-semibold text-revenue">💰 {x.kind === 'refund' ? 'Refund' : 'Paid'} {money(x.amount)}</span>

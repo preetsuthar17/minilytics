@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { navigate } from '../App';
+import { FunnelPanel } from '../components/FunnelPanel';
 import { GoalsPanel } from '../components/GoalsPanel';
 import { OverviewCard } from '../components/OverviewCard';
 import { Panel, renderLabel } from '../components/Panel';
@@ -9,11 +10,13 @@ import { qs, type Overview, type Site } from '../lib/api';
 import { DashContext, type Dash } from '../lib/context';
 import { fmtMoney } from '../lib/format';
 import { useApi } from '../lib/useApi';
+import { useLive } from '../lib/useLive';
 import { useQueryState } from '../lib/useQueryState';
 
 const FILTER_LABELS: Record<string, { label: string; dim: string }> = {
   channel: { label: 'Channel', dim: 'channel' },
   source: { label: 'Referrer', dim: 'source' },
+  referrer: { label: 'Referrer URL', dim: 'referrer' },
   utm_campaign: { label: 'Campaign', dim: 'campaign' },
   utm_term: { label: 'Keyword', dim: 'keyword' },
   utm_source: { label: 'UTM source', dim: 'utm_source' },
@@ -37,7 +40,9 @@ export function Dashboard({ siteId }: { siteId: string }) {
   const [visitor, setVisitor] = useState<string | null>(null);
   const { data: sites } = useApi<Site[]>('/api/sites');
   const site = sites?.find((s) => s.id === siteId);
-  const { data: overview, loading } = useApi<Overview>(site ? `/api/sites/${siteId}/overview?${qs(q)}` : null, reloadKey);
+  const { data: overview, stale: overviewStale, loading } = useApi<Overview>(site ? `/api/sites/${siteId}/overview?${qs(q)}` : null, reloadKey);
+  const live = !!overview && overview.range.to >= Date.now() - 5 * 60_000;
+  const online = useLive(siteId, live);
 
   const addFilter = useCallback((key: string, value: string) => update({ filters: { ...q.filters, [key]: value } }), [q.filters, update]);
   const removeFilter = (key: string) => {
@@ -94,14 +99,17 @@ export function Dashboard({ siteId }: { siteId: string }) {
         )}
 
         <div className="mt-5">
-          <OverviewCard data={overview} />
+          <div className={`transition-opacity ${overviewStale ? 'opacity-50' : ''}`}>
+            <OverviewCard data={overview} online={online} live={live} />
+          </div>
         </div>
 
-        <div className="mt-5 grid gap-5 lg:grid-cols-2">
+        <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2">
           <Panel
             tabs={[
               { label: 'Channel', dim: 'channel', filter: 'channel' },
-              { label: 'Referrer', dim: 'source', filter: 'source' },
+              { label: 'Referrer', dim: 'source', filter: 'source', drill: 'referrer' },
+              { label: 'Referrer URL', dim: 'referrer', filter: 'referrer' },
               { label: 'Campaign', dim: 'campaign', filter: 'utm_campaign' },
               { label: 'Keyword', dim: 'keyword', filter: 'utm_term' },
             ]}
@@ -131,10 +139,14 @@ export function Dashboard({ siteId }: { siteId: string }) {
         </div>
 
         <div className="mt-5">
+          <FunnelPanel />
+        </div>
+
+        <div className="mt-5">
           <GoalsPanel totalVisitors={overview?.current.visitors ?? 0} />
         </div>
 
-        <p className="mt-8 text-center text-xs text-stone-400">
+        <p className="mt-8 text-center text-xs text-stone-500">
           Times in {site.timezone} · Revenue in {site.currency} ·{' '}
           <button className="underline-offset-2 hover:underline" onClick={() => navigate(`/site/${site.id}/settings`)}>
             Settings & install

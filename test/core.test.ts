@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { classify } from '../src/shared/sources';
 import { belongsTo, normalizePath } from '../src/worker/collect';
 import { verifyStandardWebhook } from '../src/worker/lib/crypto';
-import { bucketLabels, resolveRange, startOfDay, tzOffset } from '../src/worker/lib/time';
+import { bucketLabels, previousRange, resolveRange, startOfDay, tzOffset } from '../src/worker/lib/time';
 import { isBot, parseUA } from '../src/worker/lib/ua';
 import { purgeOldData, retentionCutoff, retentionDays } from '../src/worker/retention';
 
@@ -79,6 +79,30 @@ describe('time ranges', () => {
   it('custom ranges include the whole last day', () => {
     const r = resolveRange({ period: 'custom', from: '2026-10-01', to: '2026-10-07' }, 'UTC', 0, now);
     expect(r.to - r.from).toBe(7 * 86_400_000);
+  });
+  it('compares a running "today" with the same hours of yesterday', () => {
+    const at = Date.UTC(2026, 9, 23, 3, 38);
+    const r = resolveRange({ period: 'today' }, 'UTC', 0, at);
+    expect(previousRange(r, 'UTC', at)).toEqual({ from: Date.UTC(2026, 9, 22, 0, 0), to: Date.UTC(2026, 9, 22, 3, 38) });
+  });
+  it('compares a running 7 days with the same stretch a week earlier', () => {
+    const at = Date.UTC(2026, 9, 23, 3, 38);
+    const r = resolveRange({ period: '7d' }, 'UTC', 0, at);
+    expect(previousRange(r, 'UTC', at)).toEqual({ from: r.from - 7 * 86_400_000, to: at - 7 * 86_400_000 });
+  });
+  it('compares 24h and finished periods with the period right before', () => {
+    const at = Date.UTC(2026, 9, 23, 3, 38);
+    const h = resolveRange({ period: '24h' }, 'UTC', 0, at);
+    expect(previousRange(h, 'UTC', at)).toEqual({ from: at - 48 * 3_600_000, to: at - 24 * 3_600_000 });
+    const y = resolveRange({ period: 'yesterday' }, 'UTC', 0, at);
+    expect(previousRange(y, 'UTC', at)).toEqual({ from: Date.UTC(2026, 9, 21), to: Date.UTC(2026, 9, 22) });
+  });
+  it('keeps local midnights across a daylight saving change', () => {
+    const at = Date.UTC(2026, 2, 9, 12, 0);
+    const r = resolveRange({ period: 'today' }, 'America/New_York', 0, at);
+    const prev = previousRange(r, 'America/New_York', at);
+    expect(prev.from).toBe(Date.UTC(2026, 2, 8, 5, 0));
+    expect(prev.to - prev.from).toBe(r.to - r.from);
   });
   it('weekly buckets start on Monday', () => {
     const r = resolveRange({ period: '30d', granularity: 'week' }, 'UTC', 0, now);

@@ -1,8 +1,8 @@
 import type { Context } from 'hono';
-import { classify } from '../shared/sources';
+import { classify, isPaymentOrAuthReferrer } from '../shared/sources';
 import { getSite, type AppEnv, type Site } from './env';
 import { isBot, parseUA } from './lib/ua';
-import { creditedSessionSql } from './payments';
+import { creditedSessionSql, linkRefunds } from './payments';
 
 const TYPES = new Set(['pageview', 'goal', 'outbound', 'ping', 'identify']);
 const MAX_PING_MS = 10 * 60_000;
@@ -193,6 +193,7 @@ function claimPayment(db: D1Database, siteId: string, vid: string, url: URL, now
          WHERE site_id = ? AND (id = ? OR subscription_id = ?) AND visitor_id IS NULL`,
       )
       .bind(vid, siteId, vid, now + 60_000, siteId, paymentId, paymentId),
+    linkRefunds(db, siteId, 'SELECT id FROM payments WHERE site_id = ? AND (id = ? OR subscription_id = ?)', [siteId, paymentId, paymentId]),
     db
       .prepare(
         `UPDATE visitors SET email = COALESCE(email, (SELECT email FROM payments WHERE site_id = ? AND (id = ? OR subscription_id = ?) LIMIT 1)),
@@ -234,8 +235,8 @@ function newSession(
   if (body.r) {
     try {
       const r = new URL(body.r);
-      // Navigation between your own pages/subdomains is not a referral.
-      if (/^https?:$/.test(r.protocol) && !belongsTo(r.hostname, site.domain)) {
+      // Navigation between your own pages/subdomains is not a referral, and neither is coming back from checkout or sign-in.
+      if (/^https?:$/.test(r.protocol) && !belongsTo(r.hostname, site.domain) && !isPaymentOrAuthReferrer(r.hostname, r.pathname)) {
         referrerDomain = stripWww(r.hostname);
         referrer = (r.hostname + normalizePath(r.pathname)).slice(0, 500);
       }

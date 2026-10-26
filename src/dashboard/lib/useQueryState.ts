@@ -17,6 +17,34 @@ function read(): Query {
   };
 }
 
+const EXTRA_PARAMS = ['funnel'] as const;
+
+/** A single URL param that survives reloads and period/filter changes (e.g. the selected funnel). */
+export function useUrlParam(name: (typeof EXTRA_PARAMS)[number]) {
+  const get = () => new URLSearchParams(window.location.search).get(name);
+  const [value, setValue] = useState<string | null>(get);
+
+  useEffect(() => {
+    const on = () => setValue(get());
+    window.addEventListener('popstate', on);
+    return () => window.removeEventListener('popstate', on);
+  }, [name]);
+
+  const set = useCallback(
+    (v: string | null) => {
+      const p = new URLSearchParams(window.location.search);
+      if (v) p.set(name, v);
+      else p.delete(name);
+      const search = p.toString();
+      window.history.replaceState(null, '', `${window.location.pathname}${search ? `?${search}` : ''}`);
+      setValue(v);
+    },
+    [name],
+  );
+
+  return [value, set] as const;
+}
+
 export function useQueryState() {
   const [q, setQ] = useState<Query>(read);
 
@@ -39,7 +67,12 @@ export function useQueryState() {
       if (next.to) p.set('to', next.to);
       if (next.granularity) p.set('granularity', next.granularity);
       if (Object.keys(next.filters).length) p.set('filters', JSON.stringify(next.filters));
-      window.history.replaceState(null, '', `${window.location.pathname}?${p}`);
+      for (const k of EXTRA_PARAMS) {
+        const v = new URLSearchParams(window.location.search).get(k);
+        if (v) p.set(k, v);
+      }
+      const url = `${window.location.pathname}?${p}`;
+      if (url !== window.location.pathname + window.location.search) window.history.pushState(null, '', url);
       return next;
     });
   }, []);

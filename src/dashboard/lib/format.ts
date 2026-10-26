@@ -5,13 +5,14 @@ export function fmtNumber(n: number): string {
 
 export function fmtMoney(minor: number, currency: string, decimals: number, compact = false): string {
   const v = minor / 10 ** decimals;
+  const digits = compact || Math.abs(v) >= 1000 ? 0 : Math.abs(v) < 10 && v !== 0 ? 2 : 0;
   try {
     return new Intl.NumberFormat('en', {
       style: 'currency',
       currency,
       notation: compact && Math.abs(v) >= 10_000 ? 'compact' : 'standard',
-      maximumFractionDigits: compact || Math.abs(v) >= 1000 ? 0 : Math.abs(v) < 10 && v !== 0 ? 2 : 0,
-      minimumFractionDigits: 0,
+      maximumFractionDigits: digits,
+      minimumFractionDigits: digits,
     }).format(v);
   } catch {
     return `${v.toFixed(decimals)} ${currency}`;

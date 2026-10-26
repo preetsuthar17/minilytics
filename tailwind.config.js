@@ -3,7 +3,8 @@ export default {
   content: ['./src/dashboard/**/*.{ts,tsx,html}'],
   theme: {
     extend: {
-      fontFamily: { sans: ['"Bricolage Grotesque"', 'ui-sans-serif', 'system-ui', 'sans-serif'] },
+      fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'] },
+      fontWeight: { normal: '490' },
       colors: {
         paper: '#f8f6f3',
         ink: '#1c1917',

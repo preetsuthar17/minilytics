@@ -43,7 +43,7 @@ export function Settings({ siteId }: { siteId: string }) {
   useEffect(() => {
     api<Site>(`/api/sites/${siteId}`).then((s) => {
       setSite(s);
-      setForm({ name: s.name, domain: s.domain, timezone: s.timezone, currency: s.currency, dodo_webhook_secret: s.dodo_webhook_secret ?? '' });
+      setForm({ name: s.name, domain: s.domain, timezone: s.timezone, currency: s.currency, dodo_webhook_secret: s.dodo_webhook_secret ?? '', dodo_brand_id: s.dodo_brand_id ?? '' });
     });
   }, [siteId]);
 
@@ -156,6 +156,22 @@ async rewrites() {
               </button>
             </div>
             {site.dodo_webhook_secret && <p className="mt-1 text-xs text-emerald-600">✓ Secret configured</p>}
+          </li>
+          <li>
+            Selling several brands from one Dodo business? Dodo sends every brand's payments to every webhook, so enter this site's{' '}
+            <b>brand ID</b> (Dodo → <b>Settings → Brands</b>) and payments from other brands are ignored. Leave empty if you only have one brand.
+            <div className="mt-2 flex gap-2">
+              <input
+                className="input font-mono"
+                placeholder="Brand ID"
+                value={form.dodo_brand_id ?? ''}
+                onChange={(e) => setForm({ ...form, dodo_brand_id: e.target.value })}
+              />
+              <button className="btn-dark" onClick={() => save({ dodo_brand_id: form.dodo_brand_id ?? '' }, 'Brand saved')}>
+                Save
+              </button>
+            </div>
+            {site.dodo_brand_id && <p className="mt-1 text-xs text-emerald-600">✓ Only payments from brand {site.dodo_brand_id}</p>}
           </li>
           <li>
             Pass the visitor cookies as metadata when you create a checkout (this is what makes attribution exact):
