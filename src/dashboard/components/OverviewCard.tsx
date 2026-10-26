@@ -111,7 +111,8 @@ export function OverviewCard({ data, online, live }: { data: Overview | null; on
               <CartesianGrid vertical={false} stroke="#efedea" strokeDasharray="4 4" />
               <XAxis
                 dataKey="bucket"
-                tickFormatter={(b) => bucketLabel(b, g)}
+                // Hourly over several days: a bare "3 PM" is ambiguous, so include the date.
+                tickFormatter={(b) => bucketLabel(b, g, g === 'hour' && data.range.to - data.range.from > 2 * 86_400_000 + 3_600_000)}
                 tick={TICK}
                 axisLine={false}
                 tickLine={false}

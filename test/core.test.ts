@@ -104,6 +104,13 @@ describe('time ranges', () => {
     expect(prev.from).toBe(Date.UTC(2026, 2, 8, 5, 0));
     expect(prev.to - prev.from).toBe(r.to - r.from);
   });
+  it('honours hourly for ranges up to a month', () => {
+    const r = resolveRange({ period: '30d', granularity: 'hour' }, 'UTC', 0, now);
+    expect(r.granularity).toBe('hour');
+    expect(bucketLabels(r, 0)).toHaveLength(29 * 24 + 12);
+    expect(resolveRange({ period: '7d', granularity: 'hour' }, 'UTC', 0, now).granularity).toBe('hour');
+    expect(resolveRange({ period: '90d', granularity: 'hour' }, 'UTC', 0, now).granularity).toBe('day');
+  });
   it('weekly buckets start on Monday', () => {
     const r = resolveRange({ period: '30d', granularity: 'week' }, 'UTC', 0, now);
     for (const l of bucketLabels(r, 0)) expect(new Date(l + 'T00:00:00Z').getUTCDay()).toBe(1);

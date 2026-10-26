@@ -36,6 +36,9 @@ function parseDay(s: string, tz: string): number | null {
   return utc - tzOffset(tz, utc);
 }
 
+/** Longest range that can be shown hourly (31 days, plus slack for a daylight saving shift). */
+export const MAX_HOURLY_SPAN = 31 * DAY + 2 * HOUR;
+
 export type Granularity = 'hour' | 'day' | 'week' | 'month';
 
 export interface Range {
@@ -100,8 +103,8 @@ export function resolveRange(
   const g = (['hour', 'day', 'week', 'month'] as const).includes(q.granularity as Granularity)
     ? (q.granularity as Granularity)
     : auto;
-  // Hourly buckets over months would be thousands of points; fall back to the automatic choice.
-  const granularity = g === 'hour' && span > 7 * DAY ? auto : g;
+  // Hourly buckets over months would be thousands of points; allow up to a month (≈744), else fall back.
+  const granularity = g === 'hour' && span > MAX_HOURLY_SPAN ? auto : g;
   return { from, to, granularity };
 }
 

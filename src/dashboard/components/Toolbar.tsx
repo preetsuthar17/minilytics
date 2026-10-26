@@ -19,6 +19,9 @@ export const PERIODS: { value: string; label: string }[] = [
 const SHORTCUTS: Record<string, string> = { t: 'today', y: 'yesterday', '7': '7d', '3': '30d', a: 'all' };
 const HINTS = Object.fromEntries(Object.entries(SHORTCUTS).map(([k, v]) => [v, k.toUpperCase()]));
 
+/** Mirrors MAX_HOURLY_SPAN in the worker: longer ranges can't be shown hourly. */
+const MAX_HOURLY_SPAN = 31 * 86_400_000 + 2 * 3_600_000;
+
 const GRANULARITIES = [
   { value: 'hour', label: 'Hourly' },
   { value: 'day', label: 'Daily' },
@@ -243,23 +246,28 @@ export function Toolbar({
         align="right"
         button={
           <button className="btn h-11 px-4 text-base">
-            {GRANULARITIES.find((g) => g.value === (q.granularity ?? overview?.range.granularity))?.label ?? 'Daily'} <Chevron />
+            {GRANULARITIES.find((g) => g.value === (overview?.range.granularity ?? q.granularity))?.label ?? 'Daily'} <Chevron />
           </button>
         }
       >
         {(close) =>
-          GRANULARITIES.map((g) => (
-            <button
-              key={g.value}
-              className={itemCls((q.granularity ?? overview?.range.granularity) === g.value)}
-              onClick={() => {
-                close();
-                update({ granularity: g.value });
-              }}
-            >
-              {g.label}
-            </button>
-          ))
+          GRANULARITIES.map((g) => {
+            const tooLong = g.value === 'hour' && !!overview && overview.range.to - overview.range.from > MAX_HOURLY_SPAN;
+            return (
+              <button
+                key={g.value}
+                className={`${itemCls((overview?.range.granularity ?? q.granularity) === g.value)} disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent`}
+                disabled={tooLong}
+                title={tooLong ? 'Hourly is available for ranges up to 31 days' : undefined}
+                onClick={() => {
+                  close();
+                  update({ granularity: g.value });
+                }}
+              >
+                {g.label}
+              </button>
+            );
+          })
         }
       </Dropdown>
 
