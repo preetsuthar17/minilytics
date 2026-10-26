@@ -6,6 +6,32 @@ Cloudflare's free plan.
 
 ![Dashboard](docs/dashboard.png)
 
+## Sponsors
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://diskmate.app/?ref=minilytics-github"><img src="docs/sponsors/diskmate.svg" width="64" height="64" alt="DiskMate"></a><br>
+      <a href="https://diskmate.app/?ref=minilytics-github"><b>DiskMate</b></a><br>
+      <sub>Disk space analyzer &amp; cleaner for Mac</sub>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://pastebuddy.app/?ref=minilytics-github"><img src="docs/sponsors/pastebuddy.svg" width="64" height="64" alt="PasteBuddy"></a><br>
+      <a href="https://pastebuddy.app/?ref=minilytics-github"><b>PasteBuddy</b></a><br>
+      <sub>Clipboard history for Mac: never lose what you copy</sub>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://checkout.dodopayments.com/buy/pdt_0NqWPM98xzStsrTUMLyxE?quantity=1"><b>Your logo here</b></a><br>
+      <sub>Reach indie hackers and developers who self-host their analytics</sub><br><br>
+      <a href="https://checkout.dodopayments.com/buy/pdt_0NqWPM98xzStsrTUMLyxE?quantity=1">Become a sponsor →</a>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <a href="https://checkout.dodopayments.com/buy/pdt_0NqWPM98xzStsrTUMLyxE?quantity=1"><img src="https://img.shields.io/badge/Become%20a%20sponsor-%2419%2Fmonth%20early%20price-e07b5f?style=for-the-badge" alt="Become a sponsor: $19/month early price"></a>
+</p>
+
 ## What it tracks
 
 - **Visitors, revenue, conversion rate, revenue per visitor, bounce rate, session time, online now**, each with a % change against the previous period
@@ -15,6 +41,8 @@ Cloudflare's free plan.
 - **Where they are and what they use**: country, region, city, browser, OS, device
 - **What they did**: pages, entry pages, exit links (outbound clicks), button clicks and custom goals, funnels
 - **Who paid**: a Journey list of every customer with their source, amount, time to convert, and a full visitor timeline (visit → pages → clicks → payment)
+- **Live globe** (press `M`): every visitor on your site right now, on a 3D globe or 2D map, with a live feed of page views, goals and payments, optional sounds, light/dark map and fullscreen. Map tiles from [OpenFreeMap](https://openfreemap.org), free with no API key
+- Anonymous visitors get friendly, stable names like "brown fox"
 - Click any row to filter the whole dashboard (for example "only visitors from the launch tweet")
 - Multiple websites, one login
 
@@ -88,6 +116,31 @@ npm run deploy
 | 5 GB D1 storage | Years of data at side-project traffic |
 
 At 5–10k visitors a month you'll use a few percent of this. If you outgrow it, Cloudflare's Workers Paid plan is $5/month.
+
+## Run it as a hosted SaaS (optional)
+
+By default Minilytics is single-user with a password. Set the Google values below and it becomes a hosted product:
+a landing page with pricing, **Sign in with Google**, a paid plan through Dodo Payments, and every customer sees only
+their own sites. Tracking stops (quietly) for sites whose owner's plan has ended.
+
+```bash
+npx wrangler secret put GOOGLE_CLIENT_ID        # Google Cloud → Credentials → OAuth client (Web)
+npx wrangler secret put GOOGLE_CLIENT_SECRET    # redirect URI: https://YOUR-DOMAIN/api/auth/google/callback
+npx wrangler secret put ADMIN_EMAILS            # your Google email(s): free, and you keep the existing sites
+npx wrangler secret put PLAN_CHECKOUT_URL       # Dodo payment link for the plan
+npx wrangler secret put PLAN_PRODUCT_ID         # that product's id (pdt_...)
+npx wrangler secret put BILLING_WEBHOOK_SECRET  # Dodo webhook → https://YOUR-DOMAIN/api/billing/webhook
+npx wrangler secret put PLAN_PRICE              # e.g. $29
+npx wrangler secret put PLAN_INTERVAL           # lifetime | month | year
+npx wrangler secret put PLAN_SPOTS              # e.g. 5 ("3 of 5 spots left"); optional
+npx wrangler secret put PLAN_NEXT_PRICE         # e.g. $49 ("…, then $49"); optional
+npx wrangler secret put SUPPORT_EMAIL           # shown on pricing, billing and legal pages
+npm run deploy
+```
+
+Subscribe the billing webhook to `payment.succeeded`, `subscription.*` and `refund.succeeded`. A one-time product
+(`PLAN_INTERVAL=lifetime`) gives lifetime access; a subscription gives access until it expires or is refunded.
+The Terms, Privacy and Refund pages (`/terms`, `/privacy`, `/refund`) are plain-language starting points: review them.
 
 ## Install on a website
 
@@ -183,6 +236,7 @@ npm run dev:web                       # optional: hot-reloading dashboard on htt
 npm run seed                          # optional: 30 days of demo data ("ShipKit" site)
 npm test                              # unit tests
 npm run smoke                         # end-to-end test against the running dev server
+node scripts/smoke-hosted.mjs         # hosted-mode test (see the comment at the top for how to start it)
 ```
 
 ## How it's built

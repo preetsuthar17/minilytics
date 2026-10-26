@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, qs, type BreakdownRow } from '../lib/api';
+import { displayName } from '../../shared/names';
 import { useDash } from '../lib/context';
 import { countryName, fmtAgo, fmtDateTime, fmtDuration, fmtNumber, fmtPct, shortId } from '../lib/format';
 import { prefetch, useApi } from '../lib/useApi';
@@ -87,7 +88,7 @@ function VisitorCell({ id, name, email, country, city, device, os, browser, badg
       <Avatar id={id} size={44} />
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <span className="truncate font-medium">{name || email || `Visitor ${shortId(id)}`}</span>
+          <span className="truncate font-medium">{displayName(id, name, email)}</span>
           {badge}
         </div>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-stone-500">

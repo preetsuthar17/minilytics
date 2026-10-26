@@ -12,7 +12,7 @@ function app() {
   let siteReads = 0;
   const db = new Proxy(d1, {
     get(target, prop) {
-      if (prop === 'prepare') return (sql: string) => (/FROM sites WHERE id = \?/.test(sql) && siteReads++, target.prepare(sql));
+      if (prop === 'prepare') return (sql: string) => (/FROM sites\b[\s\S]*WHERE (s\.)?id = \?/.test(sql) && siteReads++, target.prepare(sql));
       return Reflect.get(target, prop);
     },
   });

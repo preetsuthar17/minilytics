@@ -153,7 +153,7 @@ describe('refunds', () => {
     await t.webhook('payment.succeeded', pay('pay_late', { customer: { customer_id: 'cus_late' } }));
     await t.webhook('refund.succeeded', { payment_id: 'pay_late', refund_id: 'ref_late', amount: 4900, currency: 'USD' });
     expect(t.payments().find((p) => p.id === 'ref_late')).toMatchObject({ visitor_id: null });
-    const geo = { country: null, region: null, city: null };
+    const geo = { country: null, region: null, city: null, lat: null, lon: null };
     const url = new URL('https://example.com/thanks?payment_id=pay_late');
     await ingest(t.d1, t.site, { w: t.site.id, t: 'pageview', u: url.href, vid: 'visitor-late', sid: 'session-late' }, url, 'Mozilla/5.0 Chrome/129', geo, T0 + 60_000);
     const rows = t.payments();

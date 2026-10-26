@@ -23,7 +23,7 @@ function Change({ cur, prev, invert = false }: { cur: number; prev: number; inve
 
 const TICK = { fill: '#78716c', fontSize: 12 };
 
-export function OverviewCard({ data, online, live }: { data: Overview | null; online?: number; live?: boolean }) {
+export function OverviewCard({ data, online, live, onLive }: { data: Overview | null; online?: number; live?: boolean; onLive: () => void }) {
   const { money } = useDash();
   const [hidden, setHidden] = useState<Record<Metric, boolean>>({ visitors: false, revenue: false });
   const c = data?.current;
@@ -83,7 +83,7 @@ export function OverviewCard({ data, online, live }: { data: Overview | null; on
           );
         })}
         {data && (
-          <div className="px-5 py-4">
+          <button className="px-5 py-4 text-left hover:bg-stone-50" onClick={onLive} title="Open the live map (M)">
             <div className="flex items-center gap-1.5 text-sm text-stone-500">
               Online <span className="h-2 w-2 animate-pulse rounded-full bg-green-500" />
               {live && (
@@ -93,7 +93,8 @@ export function OverviewCard({ data, online, live }: { data: Overview | null; on
               )}
             </div>
             <div className="mt-1 text-[28px] font-semibold leading-tight" aria-live="polite"><span key={online ?? data.online} className="tick-in inline-block">{online ?? data.online}</span></div>
-          </div>
+            <div className="text-xs text-stone-400">View on map →</div>
+          </button>
         )}
         {!data && <div className="col-span-full h-[98px] animate-pulse bg-stone-50" />}
       </div>

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { navigate } from '../App';
 import { FunnelPanel } from '../components/FunnelPanel';
 import { GoalsPanel } from '../components/GoalsPanel';
@@ -12,6 +12,9 @@ import { fmtMoney } from '../lib/format';
 import { useApi } from '../lib/useApi';
 import { useLive } from '../lib/useLive';
 import { useQueryState } from '../lib/useQueryState';
+
+// The globe pulls in a map library, so it's only downloaded when opened.
+const LiveView = lazy(() => import('../components/LiveView'));
 
 const FILTER_LABELS: Record<string, { label: string; dim: string }> = {
   channel: { label: 'Channel', dim: 'channel' },
@@ -38,6 +41,17 @@ export function Dashboard({ siteId }: { siteId: string }) {
   const [q, update] = useQueryState();
   const [reloadKey, setReloadKey] = useState(0);
   const [visitor, setVisitor] = useState<string | null>(null);
+  const [mapOpen, setMapOpen] = useState(() => new URLSearchParams(window.location.search).get('live') === '1');
+
+  // "M" opens the live map, like DataFast.
+  useEffect(() => {
+    const on = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (e.key.toLowerCase() === 'm' && !e.metaKey && !e.ctrlKey && !/INPUT|TEXTAREA|SELECT/.test(t.tagName)) setMapOpen(true);
+    };
+    window.addEventListener('keydown', on);
+    return () => window.removeEventListener('keydown', on);
+  }, []);
   const { data: sites } = useApi<Site[]>('/api/sites');
   const site = sites?.find((s) => s.id === siteId);
   const { data: overview, stale: overviewStale, loading } = useApi<Overview>(site ? `/api/sites/${siteId}/overview?${qs(q)}` : null, reloadKey);
@@ -79,7 +93,16 @@ export function Dashboard({ siteId }: { siteId: string }) {
   return (
     <DashContext.Provider value={dash}>
       <div className="mx-auto max-w-[1480px] px-3 py-6 sm:px-6 lg:py-10">
-        <Toolbar site={site} sites={sites!} q={q} update={update} overview={overview} onRefresh={() => setReloadKey((k) => k + 1)} loading={loading} />
+        <Toolbar
+          site={site}
+          sites={sites!}
+          q={q}
+          update={update}
+          overview={overview}
+          onRefresh={() => setReloadKey((k) => k + 1)}
+          onLive={() => setMapOpen(true)}
+          loading={loading}
+        />
 
         {Object.keys(q.filters).length > 0 && (
           <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -100,7 +123,7 @@ export function Dashboard({ siteId }: { siteId: string }) {
 
         <div className="mt-5">
           <div className={`transition-opacity ${overviewStale ? 'opacity-50' : ''}`}>
-            <OverviewCard data={overview} online={online} live={live} />
+            <OverviewCard data={overview} online={online} live={live} onLive={() => setMapOpen(true)} />
           </div>
         </div>
 
@@ -153,6 +176,11 @@ export function Dashboard({ siteId }: { siteId: string }) {
           </button>
         </p>
       </div>
+      {mapOpen && (
+        <Suspense fallback={<div className="fixed inset-0 z-50 bg-[#070b1a]" />}>
+          <LiveView onClose={() => setMapOpen(false)} />
+        </Suspense>
+      )}
       <VisitorModal key={visitor ?? 'none'} visitorId={visitor} onClose={() => setVisitor(null)} />
     </DashContext.Provider>
   );

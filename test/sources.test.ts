@@ -43,7 +43,7 @@ describe('payment and sign-in referrers', () => {
   it('stores a session back from checkout as Direct with no referrer', async () => {
     const { d1, raw } = testDb();
     const site = { id: 'site0001', domain: 'example.com', currency: 'USD' } as Site;
-    const geo = { country: null, region: null, city: null };
+    const geo = { country: null, region: null, city: null, lat: null, lon: null };
     const ua = 'Mozilla/5.0 (Macintosh) Chrome/129 Safari/537.36';
     const body = (sid: string, r: string) => ({ w: site.id, t: 'pageview', u: 'https://example.com/thanks', r, vid: 'visitor-1', sid });
     await ingest(d1, site, body('session-1', 'https://checkout.dodopayments.com/session/abc'), new URL('https://example.com/thanks'), ua, geo, 1);

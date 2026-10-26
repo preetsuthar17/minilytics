@@ -31,6 +31,7 @@ export interface Site {
   api_key: string;
   dodo_webhook_secret: string | null;
   dodo_brand_id: string | null;
+  dodo_product_ids?: string | null;
   created_at: number;
   visitors24h?: number;
   online?: number;
@@ -87,4 +88,30 @@ export function qs(q: Query, extra: Record<string, string | number> = {}) {
   if (Object.keys(q.filters).length) p.set('filters', JSON.stringify(q.filters));
   for (const [k, v] of Object.entries(extra)) p.set(k, String(v));
   return p.toString();
+}
+
+export interface Me {
+  loggedIn: boolean;
+  hosted: boolean;
+  user: {
+    id: string;
+    email: string | null;
+    name: string | null;
+    avatar: string | null;
+    admin: boolean;
+    paid: boolean;
+    plan_status: string;
+    plan_until: number | null;
+  } | null;
+}
+
+export interface PlanInfo {
+  hosted: boolean;
+  price: string;
+  interval: string;
+  spots: number;
+  spotsLeft: number | null;
+  nextPrice: string | null;
+  checkout: boolean;
+  supportEmail: string | null;
 }

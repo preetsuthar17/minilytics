@@ -290,6 +290,12 @@ export async function handleDodoWebhook(c: Context<AppEnv>) {
   if (event.type === 'payment.succeeded' && site.dodo_brand_id && str(data.brand_id) !== site.dodo_brand_id) {
     return c.json({ ok: true, skipped: 'other brand' });
   }
+  // One Dodo account may sell several products; count only the ones that belong to this site.
+  const allowed = (site.dodo_product_ids ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  if (allowed.length && event.type === 'payment.succeeded') {
+    const products = Array.isArray(data.product_cart) ? data.product_cart.map((p: any) => p?.product_id) : [];
+    if (!products.some((id: string) => allowed.includes(id))) return c.json({ ok: true, ignored: 'other product' });
+  }
 
   if (event.type === 'payment.succeeded') {
     let amount = Number(data.total_amount) || 0;
